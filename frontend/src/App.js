@@ -315,7 +315,7 @@ function App() {
             label="Last 1 day (12:00 AM to 12:00 AM)"
           />
           <Button type="submit" variant="contained" size="large" startIcon={<SearchIcon />} disabled={loadingStep !== -1}>
-            {loadingStep !== -1 ? <CircularProgress size={24} /> : 'Create Jira'}
+            {loadingStep !== -1 ? <CircularProgress size={24} /> : 'Analyze'}
           </Button>
         </Box>
       </LocalizationProvider>
