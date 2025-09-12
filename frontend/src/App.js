@@ -29,6 +29,7 @@ function App() {
   const [earliest, setEarliest] = useState(null);
   const [latest, setLatest] = useState(null);
   const [useLastDay, setUseLastDay] = useState(true);
+  const API_BASE = process.env.REACT_APP_API_BASE || `${window.location.protocol}//${window.location.hostname}:8000`;
 
   function computeLastOneDayRange() {
     const now = new Date();
@@ -94,7 +95,7 @@ function App() {
     setError('');
     try {
       // Step 1: find SKYSI ticket(s) by aem_service
-      const findRes = await fetch('http://localhost:8000/find-skysi', {
+      const findRes = await fetch(`${API_BASE}/find-skysi`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ aem_service: aemService })
@@ -118,7 +119,7 @@ function App() {
 
       // Step 2: run the existing process with the first matching SKYSI key
       const selectedKey = issues[0].key;
-      const res = await fetch('http://localhost:8000/process', {
+      const res = await fetch(`${API_BASE}/process`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -277,10 +278,10 @@ function App() {
     <Container maxWidth="md" sx={{ py: 6 }}>
       <Box sx={{ textAlign: 'center', mb: 4 }}>
         <Typography variant="h4" fontWeight={700} gutterBottom>
-          Create AEM Forms Jira from SKYSI Jira
+          Analyze SKYSI Jira for Forms Submit Errors
         </Typography>
         <Typography variant="subtitle1" color="text.secondary">
-          Enter a SKYSI Jira ID to extract context, analyze Splunk logs, and create a new Forms Jira with all details and error context.
+          Enter a AEM Service to extract context, analyze Splunk logs, and create a new Forms Jira with all details and error context.
         </Typography>
       </Box>
       <LocalizationProvider dateAdapter={AdapterDateFns}>
