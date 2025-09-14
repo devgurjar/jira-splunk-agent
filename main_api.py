@@ -1,6 +1,7 @@
 import os
 from dotenv import load_dotenv
 from flask import Flask, request, jsonify
+import json
 from crewai import LLM, Agent, Task, Crew
 from jira_tool import jira_query_tool, create_jira_issue, add_jira_comment, link_jira_issues, get_linked_forms_jira, get_jira_comments, get_jira_status, search_skysi_by_aem_service
 from aem_extractor_tool import extract_aem_fields_from_description
@@ -22,6 +23,265 @@ llm = LLM(
 
 app = Flask(__name__)
 CORS(app)
+
+# In-memory cache for report JSON
+REPORT_CACHE = {}
+REPORT_CACHE_PATH = os.getenv('REPORT_CACHE_PATH', os.path.join(os.path.dirname(__file__), 'report_cache.json'))
+
+def _resolve_cache_file_path() -> str:
+    """Return a writable file path for the report cache.
+    - If REPORT_CACHE_PATH is a directory (or has no extension), write report_cache.json inside it.
+    - Otherwise treat REPORT_CACHE_PATH as a file path and ensure its parent exists.
+    """
+    base = REPORT_CACHE_PATH
+    try:
+        # If explicitly a directory, or no file extension provided, use default filename inside.
+        is_dir_like = base.endswith(os.sep) or (os.path.splitext(base)[1] == '')
+        if is_dir_like:
+            dir_path = base
+        else:
+            # If exists and is a dir, treat as dir; else parent dir is dirname(base)
+            if os.path.isdir(base):
+                dir_path = base
+            else:
+                dir_path = os.path.dirname(base) or os.getcwd()
+                # Ensure parent exists for file path
+                os.makedirs(dir_path, exist_ok=True)
+                return base
+        os.makedirs(dir_path, exist_ok=True)
+        return os.path.join(dir_path, 'report_cache.json')
+    except Exception as e:
+        print(f"Failed to resolve cache file path from '{base}': {e}")
+        fallback = os.path.join(os.path.dirname(__file__), 'report_cache.json')
+        try:
+            os.makedirs(os.path.dirname(fallback), exist_ok=True)
+        except Exception:
+            pass
+        return fallback
+
+def build_report_data(earliest: str, latest: str, services: list[str] | None = None) -> dict:
+    # 1) Top services and counts
+    svc_rows = list_services_with_errors(earliest, latest)
+    print(f"Services with errors: {svc_rows}")
+    counts_map = {r['aem_service']: r.get('error_count', 0) for r in svc_rows}
+    program_map = {r['aem_service']: r.get('program_name', '<unknown program name>') for r in svc_rows}
+    jira_base = os.getenv('JIRA_URL', 'https://jira.corp.adobe.com')
+    for r in svc_rows:
+        aem_service_val = r.get('aem_service', '')
+        skysi_key = ''
+        try:
+            lookup = search_skysi_by_aem_service(aem_service_val) if aem_service_val else {}
+            issues = lookup.get('issues') or []
+            if issues:
+                skysi_key = issues[0].get('key', '')
+        except Exception:
+            skysi_key = ''
+        r['skysi_key'] = skysi_key
+        r['skysi_url'] = f"{jira_base}/browse/{skysi_key}" if skysi_key else ''
+
+    if not services:
+        services = [r['aem_service'] for r in svc_rows]
+
+    print(f"Services: {services}")
+
+    # 2) Per-service aggregation
+    report_items = []
+    for aem_service in services:
+        failures_by_path = get_latest_failures_by_path(aem_service, "prod", "publish", earliest=earliest, latest=latest, per_path_limit=10)
+
+        base_error = (
+            f'index=dx_aem_engineering sourcetype=aemerror level=ERROR '
+            f'aem_service={aem_service} aem_envType=prod aem_tier=publish '
+            '(*guideContainer.af.submit.jsp* OR *FormSubmitActionManagerServiceImpl* OR *AdaptiveFormSubmitServlet*) '
+            f'earliest="{earliest}" latest="{latest}" '
+        )
+        sub = (
+            '[ search index=dx_aem_engineering sourcetype=aemaccess '
+            f'aem_service={aem_service} aem_envType=prod aem_tier=publish '
+            '(path="/adobe/forms/af/submit*" OR path="*guideContainer.af.submit.jsp") code>=500 '
+            f'earliest="{earliest}" latest="{latest}" '
+            '| sort 0 - _time '
+            '| streamstats count as failCount by path '
+            '| where failCount <= 10 '
+            '| eval f_start=_time, f_end=_time+10 '
+            '| eval query="(_time>=" . f_start . " AND _time<=" . f_end . ")" '
+            '| stats values(query) as queries '
+            '| eval search="(" . mvjoin(queries," OR ") . ")" '
+            '| fields search ] '
+        )
+        final_query = base_error + sub + '| eval EventTimeFmt=strftime(_time,"%Y-%m-%d %H:%M:%S") | table EventTimeFmt msg'
+        rows = splunk_search_rows(final_query) or []
+        print(f"Rows: {rows}")
+
+        from datetime import datetime as _dt
+        windows = []
+        for p, times in failures_by_path.items():
+            for tstr in times:
+                try:
+                    sdt = _dt.strptime(tstr, "%Y-%m-%d %H:%M:%S")
+                except Exception:
+                    continue
+                edt = sdt + timedelta(seconds=10)
+                windows.append((p, sdt, edt))
+
+        path_to_msgs = {p: [] for p in failures_by_path.keys()}
+        path_to_seen = {p: set() for p in failures_by_path.keys()}
+        for r in rows:
+            et = (r.get('EventTimeFmt') or '').split('.')[0]
+            msg = (r.get('msg') or '').strip()
+            if not et or not msg:
+                continue
+            try:
+                evt_dt = _dt.strptime(et, "%Y-%m-%d %H:%M:%S")
+            except Exception:
+                continue
+            matched = None
+            for p, sdt, edt in windows:
+                if sdt <= evt_dt <= edt:
+                    matched = p
+                    break
+            if matched and msg not in path_to_seen[matched] and len(path_to_msgs[matched]) < 10:
+                path_to_msgs[matched].append(msg)
+                path_to_seen[matched].add(msg)
+
+        path_entries = []
+        for p, times in failures_by_path.items():
+            path_entries.append({
+                "path": p,
+                "time": ", ".join(times[:3]),
+                "messages": path_to_msgs.get(p, [])
+            })
+
+        report_items.append({
+            "aem_service": aem_service,
+            "error_count": counts_map.get(aem_service, 0),
+            "program_name": program_map.get(aem_service, '<unknown program name>'),
+            "paths": path_entries
+        })
+
+    from datetime import datetime
+    return {
+        "generated_at": datetime.utcnow().isoformat() + "Z",
+        "earliest": earliest,
+        "latest": latest,
+        "services": services,
+        "svc_rows": svc_rows,
+        "report_items": report_items,
+    }
+
+def render_dashboard_html(svc_rows: list, report_items: list, earliest: str, latest: str) -> str:
+    from html import escape as html_escape
+    def trunc15(msg: str) -> str:
+        _lines = (msg or '').split('\n')
+        return ('\n'.join(_lines[:15]) + '\n...') if len(_lines) > 15 else msg
+    css = (
+        "body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; margin: 24px; }"
+        "h1 { color: #0D47A1; }"
+        "h2 { color: #1565C0; margin-top: 24px; }"
+        ".summary { border-collapse: collapse; width: 100%; margin: 12px 0; }"
+        ".summary th { background:#1565C0; color:#fff; padding:6px; text-align:left; }"
+        ".summary td { border:1px solid #B0BEC5; padding:6px; }"
+        ".path-badge { background:#1976D2; color:#fff; padding:4px 6px; border-radius:4px; display:inline-block; }"
+        ".time { color:#546E7A; margin:6px 0; }"
+        ".msg-title { color:#37474F; font-weight:600; margin:8px 0 4px; }"
+        "pre.msg { background:#ECEFF1; border:1px solid #B0BEC5; padding:4px; white-space:pre-wrap; word-break:break-word; }"
+    )
+    parts = [
+        "<!DOCTYPE html><html><head><meta charset='utf-8'><title>Daily Forms Submit Errors Dashboard</title>",
+        f"<style>{css}</style></head><body>",
+        "<h1>Daily Forms Submit Errors Dashboard</h1>",
+        f"<div>Range: {html_escape(earliest)} → {html_escape(latest)}</div>",
+    ]
+    if svc_rows:
+        parts.append("<table class='summary'>")
+        parts.append("<tr><th>TenantID</th><th>ProgramName</th><th>ErrorCount</th><th>SKYSI</th></tr>")
+        for r in svc_rows:
+            skysi = r.get('skysi_key')
+            skysi_url = r.get('skysi_url')
+            skysi_html = f"<a href='{html_escape(skysi_url)}'>{html_escape(skysi)}</a>" if skysi and skysi_url else "-"
+            parts.append(
+                "<tr>"
+                f"<td>{html_escape(r.get('aem_service',''))}</td>"
+                f"<td>{html_escape(r.get('program_name','<unknown program name>'))}</td>"
+                f"<td>{int(r.get('error_count',0))}</td>"
+                f"<td>{skysi_html}</td>"
+                "</tr>"
+            )
+        parts.append("</table>")
+    for item in report_items:
+        svc_title = (
+            f"Service: {item['aem_service']} "
+            f"Program Name: {item.get('program_name','<unknown program name>')} "
+            f"(Failures: {item.get('error_count', 0)})"
+        )
+        parts.append(f"<h2>{html_escape(svc_title)}</h2>")
+        for pe in item.get('paths', [])[:10]:
+            parts.append(f"<div class='path-badge'>Path: {html_escape(pe.get('path',''))}</div>")
+            if pe.get('time'):
+                parts.append(f"<div class='time'>Time: {html_escape(pe['time'])}</div>")
+            msgs = pe.get('messages') or []
+            if not msgs:
+                parts.append("<div style='color:#B71C1C'>&lt;no messages&gt;</div>")
+                continue
+            for idx, m in enumerate(msgs, start=1):
+                parts.append(f"<div class='msg-title'>Message {idx}</div>")
+                parts.append(f"<pre class='msg'>{html_escape(trunc15(m))}</pre>")
+    parts.append("</body></html>")
+    return ''.join(parts)
+
+@app.route('/report-refresh', methods=['POST'])
+def report_refresh():
+    """Compute and cache report JSON (to be triggered by cron)."""
+    data = request.json or {}
+    earliest = data.get('earliest') or '-1d'
+    latest = data.get('latest') or 'now'
+    services = data.get('aem_services')
+
+    result = build_report_data(earliest, latest, services)
+    REPORT_CACHE['data'] = result
+    try:
+        cache_file = _resolve_cache_file_path()
+        with open(cache_file, 'w', encoding='utf-8') as f:
+            json.dump(result, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"Failed to write report cache file: {e}")
+    return jsonify({"status": "ok", "generated_at": result.get("generated_at"), "path": _resolve_cache_file_path()})
+
+@app.route('/report-data', methods=['GET'])
+def report_data():
+    """Return cached JSON without rerunning Splunk queries."""
+    try:
+        cache_file = _resolve_cache_file_path()
+        if os.path.exists(cache_file):
+            with open(cache_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            REPORT_CACHE['data'] = data
+            return jsonify(data)
+    except Exception as e:
+        print(f"Failed to read report cache file: {e}")
+    if 'data' in REPORT_CACHE:
+        return jsonify(REPORT_CACHE['data'])
+    return jsonify({"error": "no cached data; POST /report-refresh first"}), 404
+
+@app.route('/report-dashboard-view', methods=['GET'])
+def report_dashboard_view():
+    """Render dashboard HTML from cached JSON only."""
+    cached = None
+    try:
+        cache_file = _resolve_cache_file_path()
+        if os.path.exists(cache_file):
+            with open(cache_file, 'r', encoding='utf-8') as f:
+                cached = json.load(f)
+            REPORT_CACHE['data'] = cached
+        else:
+            cached = REPORT_CACHE.get('data')
+    except Exception as e:
+        print(f"Failed to read report cache file for dashboard: {e}")
+        cached = REPORT_CACHE.get('data')
+    if not cached:
+        return ("No cached data. Please POST /report-refresh first.", 404, { 'Content-Type': 'text/plain; charset=utf-8' })
+    html = render_dashboard_html(cached.get('svc_rows', []), cached.get('report_items', []), cached.get('earliest',''), cached.get('latest',''))
+    return (html, 200, { 'Content-Type': 'text/html; charset=utf-8' })
 
 class JiraAgent:
     def __init__(self, llm=None, tools=[]):
@@ -451,7 +711,7 @@ def find_skysi():
                 matched = p
                 break
         if matched and msg not in path_to_seen[matched]:
-            if len(path_to_msgs[matched]) < 4:
+            if len(path_to_msgs[matched]) < 10:
                 path_to_msgs[matched].append(msg)
                 path_to_seen[matched].add(msg)
 
@@ -566,7 +826,7 @@ def report():
                 if sdt <= evt_dt <= edt:
                     matched = p
                     break
-            if matched and msg not in path_to_seen[matched] and len(path_to_msgs[matched]) < 4:
+            if matched and msg not in path_to_seen[matched] and len(path_to_msgs[matched]) < 10:
                 path_to_msgs[matched].append(msg)
                 path_to_seen[matched].add(msg)
 
@@ -761,10 +1021,10 @@ def report():
                 # Message heading
                 story.append(Paragraph(f"Message {mi}", msg_title_style))
                 story.append(Spacer(1, 4))
-                # limit to first 15 lines for readability
+                # limit to first 20 lines for readability
                 _lines = (m or '').split('\n')
-                if len(_lines) > 15:
-                    m_trunc = '\n'.join(_lines[:15]) + '\n...'
+                if len(_lines) > 20:
+                    m_trunc = '\n'.join(_lines[:20]) + '\n...'
                 else:
                     m_trunc = m
                 story.append(code_block_wrapped(m_trunc))
@@ -778,6 +1038,175 @@ def report():
         'Content-Type': 'application/pdf',
         'Content-Disposition': 'attachment; filename="daily-forms-errors.pdf"'
     })
+
+@app.route('/report-dashboard', methods=['POST'])
+def report_dashboard():
+    """HTML dashboard version of /report. Does not modify /report."""
+    data = request.json or {}
+    earliest = data.get('earliest') or '-1d'
+    latest = data.get('latest') or 'now'
+    services = data.get('aem_services')  # optional
+
+    # 1) Get top services and error counts
+    svc_rows = list_services_with_errors(earliest, latest)
+    counts_map = {r['aem_service']: r.get('error_count', 0) for r in svc_rows}
+    program_map = {r['aem_service']: r.get('program_name', '<unknown program name>') for r in svc_rows}
+    jira_base = os.getenv('JIRA_URL', 'https://jira.corp.adobe.com')
+    for r in svc_rows:
+        aem_service_val = r.get('aem_service', '')
+        skysi_key = ''
+        try:
+            lookup = search_skysi_by_aem_service(aem_service_val) if aem_service_val else {}
+            issues = lookup.get('issues') or []
+            if issues:
+                skysi_key = issues[0].get('key', '')
+        except Exception:
+            skysi_key = ''
+        r['skysi_key'] = skysi_key
+        r['skysi_url'] = f"{jira_base}/browse/{skysi_key}" if skysi_key else ''
+    if not services:
+        services = [r['aem_service'] for r in svc_rows]
+
+    # 2) Build per-service details (reuse /report logic)
+    report_items = []
+    for aem_service in services:
+        failures_by_path = get_latest_failures_by_path(aem_service, "prod", "publish", earliest=earliest, latest=latest, per_path_limit=10)
+        base_error = (
+            f'index=dx_aem_engineering sourcetype=aemerror level=ERROR '
+            f'aem_service={aem_service} aem_envType=prod aem_tier=publish '
+            '(*guideContainer.af.submit.jsp* OR *FormSubmitActionManagerServiceImpl* OR *AdaptiveFormSubmitServlet*) '
+            f'earliest="{earliest}" latest="{latest}" '
+        )
+        sub = (
+            '[ search index=dx_aem_engineering sourcetype=aemaccess '
+            f'aem_service={aem_service} aem_envType=prod aem_tier=publish '
+            '(path="/adobe/forms/af/submit*" OR path="*guideContainer.af.submit.jsp") code>=500 '
+            f'earliest="{earliest}" latest="{latest}" '
+            '| sort 0 - _time '
+            '| streamstats count as failCount by path '
+            '| where failCount <= 10 '
+            '| eval f_start=_time, f_end=_time+10 '
+            '| eval query="(_time>=" . f_start . " AND _time<=" . f_end . ")" '
+            '| stats values(query) as queries '
+            '| eval search="(" . mvjoin(queries," OR ") . ")" '
+            '| fields search ] '
+        )
+        final_query = base_error + sub + '| eval EventTimeFmt=strftime(_time,"%Y-%m-%d %H:%M:%S") | table EventTimeFmt msg'
+        rows = splunk_search_rows(final_query) or []
+
+        from datetime import datetime as _dt
+        windows = []
+        for p, times in failures_by_path.items():
+            for tstr in times:
+                try:
+                    sdt = _dt.strptime(tstr, "%Y-%m-%d %H:%M:%S")
+                except Exception:
+                    continue
+                edt = sdt + timedelta(seconds=10)
+                windows.append((p, sdt, edt))
+
+        path_to_msgs = {p: [] for p in failures_by_path.keys()}
+        path_to_seen = {p: set() for p in failures_by_path.keys()}
+        for r in rows:
+            et = (r.get('EventTimeFmt') or '').split('.')[0]
+            msg = (r.get('msg') or '').strip()
+            if not et or not msg:
+                continue
+            try:
+                evt_dt = _dt.strptime(et, "%Y-%m-%d %H:%M:%S")
+            except Exception:
+                continue
+            matched = None
+            for p, sdt, edt in windows:
+                if sdt <= evt_dt <= edt:
+                    matched = p
+                    break
+            if matched and msg not in path_to_seen[matched] and len(path_to_msgs[matched]) < 10:
+                path_to_msgs[matched].append(msg)
+                path_to_seen[matched].add(msg)
+
+        path_entries = []
+        for p, times in failures_by_path.items():
+            path_entries.append({
+                "path": p,
+                "time": ", ".join(times[:3]),
+                "messages": path_to_msgs.get(p, [])
+            })
+
+        report_items.append({
+            "aem_service": aem_service,
+            "error_count": counts_map.get(aem_service, 0),
+            "program_name": program_map.get(aem_service, '<unknown program name>'),
+            "paths": path_entries
+        })
+
+    # 3) Render HTML
+    from html import escape as html_escape
+    def trunc15(msg: str) -> str:
+        _lines = (msg or '').split('\n')
+        return ('\n'.join(_lines[:15]) + '\n...') if len(_lines) > 15 else msg
+
+    css = """
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; margin: 24px; }
+    h1 { color: #0D47A1; }
+    h2 { color: #1565C0; margin-top: 24px; }
+    .summary { border-collapse: collapse; width: 100%; margin: 12px 0; }
+    .summary th { background:#1565C0; color:#fff; padding:6px; text-align:left; }
+    .summary td { border:1px solid #B0BEC5; padding:6px; }
+    .path-badge { background:#1976D2; color:#fff; padding:4px 6px; border-radius:4px; display:inline-block; }
+    .time { color:#546E7A; margin:6px 0; }
+    .msg-title { color:#37474F; font-weight:600; margin:8px 0 4px; }
+    pre.msg { background:#ECEFF1; border:1px solid #B0BEC5; padding:4px; white-space:pre-wrap; word-break:break-word; }
+    """
+
+    parts = [
+        "<!DOCTYPE html><html><head><meta charset='utf-8'><title>Daily Forms Submit Errors Dashboard</title>",
+        f"<style>{css}</style></head><body>",
+        "<h1>Daily Forms Submit Errors Dashboard</h1>",
+        f"<div>Range: {html_escape(earliest)} → {html_escape(latest)}</div>",
+    ]
+
+    # Summary table
+    if svc_rows:
+        parts.append("<table class='summary'>")
+        parts.append("<tr><th>TenantID</th><th>ProgramName</th><th>ErrorCount</th><th>SKYSI</th></tr>")
+        for r in svc_rows:
+            skysi = r.get('skysi_key')
+            skysi_url = r.get('skysi_url')
+            skysi_html = f"<a href='{html_escape(skysi_url)}'>{html_escape(skysi)}</a>" if skysi and skysi_url else "-"
+            parts.append(
+                "<tr>"
+                f"<td>{html_escape(r.get('aem_service',''))}</td>"
+                f"<td>{html_escape(r.get('program_name','<unknown program name>'))}</td>"
+                f"<td>{int(r.get('error_count',0))}</td>"
+                f"<td>{skysi_html}</td>"
+                "</tr>"
+            )
+        parts.append("</table>")
+
+    # Per-service sections
+    for item in report_items:
+        svc_title = (
+            f"Service: {item['aem_service']} "
+            f"Program Name: {item.get('program_name','<unknown program name>')} "
+            f"(Failures: {item.get('error_count', 0)})"
+        )
+        parts.append(f"<h2>{html_escape(svc_title)}</h2>")
+        for pe in item['paths'][:10]:
+            parts.append(f"<div class='path-badge'>Path: {html_escape(pe['path'])}</div>")
+            if pe.get('time'):
+                parts.append(f"<div class='time'>Time: {html_escape(pe['time'])}</div>")
+            msgs = pe.get('messages') or []
+            if not msgs:
+                parts.append("<div style='color:#B71C1C'>&lt;no messages&gt;</div>")
+                continue
+            for idx, m in enumerate(msgs, start=1):
+                parts.append(f"<div class='msg-title'>Message {idx}</div>")
+                parts.append(f"<pre class='msg'>{html_escape(trunc15(m))}</pre>")
+
+    parts.append("</body></html>")
+    html = ''.join(parts)
+    return (html, 200, { 'Content-Type': 'text/html; charset=utf-8' })
 
 if __name__ == "__main__":
     app.run(debug=True, port=8000) 
