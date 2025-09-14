@@ -30,7 +30,6 @@ import LightModeIcon from '@mui/icons-material/LightMode';
 import AssessmentOutlinedIcon from '@mui/icons-material/AssessmentOutlined';
 import WarningAmberOutlinedIcon from '@mui/icons-material/WarningAmberOutlined';
 import AccessTimeOutlinedIcon from '@mui/icons-material/AccessTimeOutlined';
-import AssignmentTurnedInOutlinedIcon from '@mui/icons-material/AssignmentTurnedInOutlined';
 import { ThemeProvider, createTheme } from '@mui/material/styles';
 import CssBaseline from '@mui/material/CssBaseline';
 import Card from '@mui/material/Card';
@@ -86,7 +85,7 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [data, setData] = useState(null);
-  const [query, setQuery] = useState('');
+  const query = '';
   const [themeMode, setThemeMode] = useState('light'); // light | dark
 
   useEffect(() => {
@@ -295,8 +294,8 @@ export default function Dashboard() {
               </Grid>
             </Grid>
             <Typography variant="h5" sx={{ mb: 1 }}>Summary</Typography>
-            <TableContainer component={Paper} elevation={0} sx={{ border: '1px solid', borderColor: (t) => t.palette.divider, overflow: 'hidden', maxHeight: 420 }}>
-              <Table size="medium" stickyHeader>
+            <TableContainer component={Paper} elevation={0} sx={{ border: '1px solid', borderColor: (t) => t.palette.divider }}>
+              <Table size="medium">
                 <TableHead>
                   <TableRow sx={{
                     background: (t) => t.palette.mode === 'light'
@@ -327,12 +326,12 @@ export default function Dashboard() {
                           const program = getProgramFromAemService(r.aem_service);
                           const href = program ? `https://aemcs-workspace.adobe.com/customer/program/${program}#environments` : '';
                           return href ? (
-                            <Button component="a" href={href} target="_blank" rel="noreferrer" variant="outlined" size="small">Tenant View</Button>
+                            <Button component="a" href={href} target="_blank" rel="noreferrer" variant="outlined" size="small" sx={{ textTransform: 'none', px: 1.5, py: 0.25 }}>Tenant View</Button>
                           ) : '-';
                         })()}
                       </TableCell>
                       <TableCell sx={{ fontSize: '0.95rem' }} align="center">
-                        <Button variant="contained" color="primary" size="small" aria-label={`Create ticket for ${r.aem_service}`} endIcon={<AssignmentTurnedInOutlinedIcon fontSize="inherit" />}>Create Ticket</Button>
+                        <Button variant="outlined" color="primary" size="small" disabled aria-label={`Create ticket for ${r.aem_service}`} sx={{ textTransform: 'none', px: 1.5, py: 0.25 }}>Create Ticket</Button>
                       </TableCell>
                     </TableRow>
                   ))}
@@ -371,9 +370,12 @@ export default function Dashboard() {
                             {(pe.messages || []).length === 0 && (
                               <Typography variant="body1" color="error">&lt;no messages&gt;</Typography>
                             )}
-                            {(pe.messages || []).slice(0, 10).map((m, mi) => (
+                            {(pe.messages || []).slice(0, 10).map((m, mi) => {
+                              const text = typeof m === 'string' ? m : (m?.msg || '');
+                              const when = typeof m === 'object' ? (m?.time || '') : '';
+                              return (
                               <Box key={mi}>
-                                <Typography variant="subtitle1" sx={{ color: 'text.secondary', mb: 0.5 }}>{`Message ${mi + 1}`}</Typography>
+                                <Typography variant="subtitle1" sx={{ color: 'text.secondary', mb: 0.5 }}>{`Message ${mi + 1}${when ? ` — ${when}` : ''}`}</Typography>
                                 <Box component="pre" sx={{
                                   m: 0,
                                   p: 1,
@@ -385,15 +387,15 @@ export default function Dashboard() {
                                   fontSize: 13.5,
                                   lineHeight: 1.4,
                                 }}>
-                                  {truncateLines(m, 20)}
+                                  {truncateLines(text, 20)}
                                 </Box>
                                 <Box sx={{ display: 'flex', justifyContent: 'flex-end' }}>
-                                  <IconButton size="small" aria-label="copy" onClick={() => navigator.clipboard.writeText(m)}>
+                                  <IconButton size="small" aria-label="copy" onClick={() => navigator.clipboard.writeText(text)}>
                                     <ContentCopyIcon fontSize="inherit" />
                                   </IconButton>
                                 </Box>
                               </Box>
-                            ))}
+                            )})}
                           </Stack>
                         </Paper>
                       ))}

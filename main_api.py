@@ -141,7 +141,8 @@ def build_report_data(earliest: str, latest: str, services: list[str] | None = N
                     matched = p
                     break
             if matched and msg not in path_to_seen[matched] and len(path_to_msgs[matched]) < 10:
-                path_to_msgs[matched].append(msg)
+                # Store both time and message so UI can show timestamp next to each message
+                path_to_msgs[matched].append({"time": et, "msg": msg})
                 path_to_seen[matched].add(msg)
 
         path_entries = []
