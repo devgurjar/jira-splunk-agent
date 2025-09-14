@@ -302,19 +302,34 @@ export default function Dashboard() {
               </Grid>
             </Grid>
             <Box sx={{ mb: 1, display: 'flex', justifyContent: 'flex-end' }}>
-              <Button
-                component="a"
-                href="https://splunk.or1.adobe.net/en-US/app/TA-aem_skyline/form_cs_product_error_dashboard?form.aem_envType=prod&form.programID=*&form.timePeriod.earliest=-24h%40h&form.timePeriod.latest=now&form.namespace=*&form.programEnvironment=*&form.aem_tier=publish"
-                target="_blank"
-                rel="noreferrer"
-                variant="outlined"
-                color="secondary"
-                size="small"
-                sx={{ textTransform: 'none', px: 1.5, py: 0.25 }}
-                endIcon={<OpenInNewOutlinedIcon fontSize="small" />}
-              >
-                For detailed analysis, visit this dashboard
-              </Button>
+              <Stack direction="row" spacing={1}>
+                <Button
+                  component="a"
+                  href="https://splunk.or1.adobe.net/en-US/app/TA-aem_skyline/form_cs_product_error_dashboard?form.aem_envType=prod&form.programID=*&form.timePeriod.earliest=-24h%40h&form.timePeriod.latest=now&form.namespace=*&form.programEnvironment=*&form.aem_tier=publish"
+                  target="_blank"
+                  rel="noreferrer"
+                  variant="outlined"
+                  color="secondary"
+                  size="small"
+                  sx={{ textTransform: 'none', px: 1.5, py: 0.25 }}
+                  endIcon={<OpenInNewOutlinedIcon fontSize="small" />}
+                >
+                  For detailed analysis, visit this dashboard
+                </Button>
+                <Button
+                  component="a"
+                  href="https://wiki.corp.adobe.com/display/lc/AEM+Forms+Submission+Errors+Analysis+rotary"
+                  target="_blank"
+                  rel="noreferrer"
+                  variant="outlined"
+                  color="info"
+                  size="small"
+                  sx={{ textTransform: 'none', px: 1.5, py: 0.25 }}
+                  endIcon={<OpenInNewOutlinedIcon fontSize="small" />}
+                >
+                  Go to this wiki for rotary and insights
+                </Button>
+              </Stack>
             </Box>
             <Typography variant="h5" sx={{ mb: 1 }}>Summary</Typography>
             <TableContainer component={Paper} elevation={0} sx={{ border: '1px solid', borderColor: (t) => t.palette.divider }}>

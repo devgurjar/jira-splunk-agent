@@ -244,7 +244,7 @@ def render_dashboard_html(svc_rows: list, report_items: list, earliest: str, lat
 def report_refresh():
     """Compute and cache report JSON (to be triggered by cron)."""
     data = request.json or {}
-    earliest = data.get('earliest') or '-15h'
+    earliest = data.get('earliest') or '-1d'
     latest = data.get('latest') or 'now'
     services = data.get('aem_services')
 
