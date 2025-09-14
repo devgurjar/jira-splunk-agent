@@ -4,9 +4,15 @@ from flask import Flask, request, jsonify
 from crewai import LLM, Agent, Task, Crew
 from jira_tool import jira_query_tool, create_jira_issue, add_jira_comment, link_jira_issues, get_linked_forms_jira, get_jira_comments, get_jira_status, search_skysi_by_aem_service
 from aem_extractor_tool import extract_aem_fields_from_description
-from splunk_tool import splunk_search_tool, get_last_error_paths
+from splunk_tool import splunk_search_tool, splunk_search_rows, get_last_error_paths, list_services_with_errors, get_top_error_times, get_latest_failures_by_path, build_multi_window_error_query
 from datetime import datetime, timedelta
 from flask_cors import CORS
+from io import BytesIO
+from reportlab.lib.pagesizes import A4
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, XPreformatted, PageBreak, Table, TableStyle, KeepTogether
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib import colors
+from reportlab.lib.units import mm
 
 load_dotenv()
 
@@ -196,57 +202,54 @@ def process():
             baseline_earliest = "-1d"
             baseline_latest = "now"
 
-        # 1) First, fetch unique paths and their last error times from aemaccess
-        paths = get_last_error_paths(
+        # New strategy: use latest top error times and search ±30s windows around each
+        times = get_top_error_times(
             aem_fields.get("aem_service", ""),
             aem_fields.get("env_type", ""),
             aem_fields.get("aem_tier", ""),
             earliest=baseline_earliest,
-            latest=baseline_latest
+            latest=baseline_latest,
+            limit=10
         )
-        print(f"Access paths: {paths}")
+        print(f"Top error times: {times}")
 
-        # 2) For each path, search error logs in ±1 minute window and collect unique messages per path (max 4 per path)
         all_results = []
         def fmt(dt):
             return dt.strftime('%m/%d/%Y:%H:%M:%S')
-        for p in paths:
-            t_str = (p.get("LastErrorTime") or "").replace(" UTC", "")
-            if not t_str:
-                continue
+        def parse_time_str(s: str):
             try:
-                t = datetime.strptime(t_str, "%Y-%m-%d %H:%M:%S")
+                return datetime.strptime(s, '%m/%d/%Y:%H:%M:%S')
             except Exception:
+                return None
+        for t_str in times:
+            t = parse_time_str(t_str)
+            if not t:
                 continue
-            e = fmt(t - timedelta(seconds=30))
-            l = fmt(t + timedelta(seconds=30))
+            e = fmt(t - timedelta(seconds=10))
+            l = fmt(t + timedelta(seconds=10))
             query = build_splunk_query(aem_fields, date_created="", user_earliest=e, user_latest=l)
-            print(f"Splunk per-path query: {query}")
-            res = splunk_search_tool(query, llm=llm)
+            print(f"Splunk per-time-window query: {query}")
+            res = splunk_search_tool(query, llm=llm, use_llm=False)
             if isinstance(res, list):
-                seen_msgs_path = set()
-                added_for_path = 0
+                seen_msgs_window = set()
                 for r in res:
-                    r.setdefault("path", p.get("path"))
+                    r.setdefault("window_center", t_str)
                     msg = (r.get("msg", "") or "").strip()
-                    if not msg:
-                        continue
-                    if msg in seen_msgs_path:
+                    if not msg or msg in seen_msgs_window:
                         continue
                     all_results.append(r)
-                    seen_msgs_path.add(msg)
-                    added_for_path += 1
-                    if added_for_path >= 4:
+                    seen_msgs_window.add(msg)
+                    if len(seen_msgs_window) >= 4:
                         break
 
-        # Fallback: if access pass returned nothing, use the original broader query
+        # Fallback
         if not all_results:
             query = build_splunk_query(aem_fields, date_created, user_earliest, user_latest)
             print(f"Splunk fallback query: {query}")
-            return splunk_search_tool(query, llm=llm)
+            return splunk_search_tool(query, llm=llm, use_llm=False)
         return all_results
     splunk_result = run_splunk((aem_fields, jira_result))
-    print(f"Splunk Result: {splunk_result}")
+    # print(f"Splunk Result: {splunk_result}")
     # For testing: return only Splunk results (skip Forms Jira creation)
     return jsonify({
         "aem_fields": aem_fields,
@@ -360,10 +363,421 @@ def process():
 def find_skysi():
     data = request.json or {}
     aem_service = data.get('aem_service', '')
+    earliest = data.get('earliest')
+    latest = data.get('latest')
     if not aem_service:
         return jsonify({"error": "Missing aem_service"}), 400
     result = search_skysi_by_aem_service(aem_service)
-    return jsonify(result), 200
+    # Log SKYSI ticket id (first match) for quick visibility
+    try:
+        issues = result.get('issues') or []
+        skysi_key = issues[0].get('key') if issues else ''
+        if skysi_key:
+            print(f"Found SKYSI ticket: {skysi_key}")
+        else:
+            print("No SKYSI ticket found for given aem_service")
+    except Exception:
+        print("No SKYSI ticket found for given aem_service")
+
+    # Default date window: last 1 day for quick lookups
+    if not earliest:
+        earliest = '-1d'
+    if not latest:
+        latest = 'now'
+
+    # Build per-path multi-window errors using access-derived failure times
+    failures_by_path = get_latest_failures_by_path(
+        aem_service, 'prod', 'publish', earliest=earliest, latest=latest, per_path_limit=10
+    )
+    print(f"Failures by path: {failures_by_path}")
+    # Build a single aemerror query with a subsearch that generates OR windows across all failures
+    path_details = []
+    base_error = (
+        f'index=dx_aem_engineering sourcetype=aemerror level=ERROR '
+        f'aem_service={aem_service} aem_envType=prod aem_tier=publish '
+        '(*guideContainer.af.submit.jsp* OR *FormSubmitActionManagerServiceImpl* OR *AdaptiveFormSubmitServlet*) '
+        f'earliest="{earliest}" latest="{latest}" '
+    )
+    sub = (
+        '[ search index=dx_aem_engineering sourcetype=aemaccess '
+        f'aem_service={aem_service} aem_envType=prod aem_tier=publish '
+        '(path="/adobe/forms/af/submit*" OR path="*guideContainer.af.submit.jsp") code>=500 '
+        f'earliest="{earliest}" latest="{latest}" '
+        '| sort 0 - _time '
+        '| streamstats count as failCount by path '
+        '| where failCount <= 10 '
+        '| eval f_start=_time, f_end=_time+10 '
+        '| eval query="(_time>=" . f_start . " AND _time<=" . f_end . ")" '
+        '| stats values(query) as queries '
+        '| eval search="(" . mvjoin(queries," OR ") . ")" '
+        '| fields search ] '
+    )
+    final_query = base_error + sub + '| eval EventTimeFmt=strftime(_time,"%Y-%m-%d %H:%M:%S") | table EventTimeFmt msg'
+    print(f"Combined multi-window query: {final_query}")
+    rows = splunk_search_rows(final_query) or []
+
+    print(f"Rows: {rows}")
+
+    # Build time windows per path for mapping: [start, end] (10s)
+    from datetime import datetime as _dt
+    windows = []
+    for p, times in failures_by_path.items():
+        for tstr in times:
+            try:
+                start_dt = _dt.strptime(tstr, "%Y-%m-%d %H:%M:%S")
+            except Exception:
+                continue
+            end_dt = start_dt + timedelta(seconds=10)
+            windows.append((p, start_dt, end_dt))
+
+    # Map error rows to paths via EventTimeFmt ∈ [start, end]
+    path_to_msgs, path_to_seen = {}, {}
+    for p in failures_by_path.keys():
+        path_to_msgs[p] = []
+        path_to_seen[p] = set()
+
+    for r in rows:
+        et = r.get('EventTimeFmt') or ''
+        msg = (r.get('msg') or '').strip()
+        if not et or not msg:
+            continue
+        try:
+            evt_dt = _dt.strptime(et.split('.')[0], "%Y-%m-%d %H:%M:%S")
+        except Exception:
+            continue
+        matched = None
+        for p, sdt, edt in windows:
+            if sdt <= evt_dt <= edt:
+                matched = p
+                break
+        if matched and msg not in path_to_seen[matched]:
+            if len(path_to_msgs[matched]) < 4:
+                path_to_msgs[matched].append(msg)
+                path_to_seen[matched].add(msg)
+
+    for p, times in failures_by_path.items():
+        path_details.append({'path': p, 'times': times, 'messages': path_to_msgs.get(p, [])})
+
+
+    print(f"Path details: {path_details}")
+
+    return jsonify({
+        'skysi': result,
+        'aem_service': aem_service,
+        'earliest': earliest,
+        'latest': latest,
+        'paths': path_details
+    }), 200
+
+@app.route('/report', methods=['POST'])
+def report():
+    data = request.json or {}
+    earliest = data.get('earliest')
+    latest = data.get('latest')
+    services = data.get('aem_services')  # optional explicit list
+
+    # Default to last 1 day when not provided
+    if not earliest:
+        earliest = '-1d'
+    if not latest:
+        latest = 'now'
+
+    # 1) Get top services and error counts
+    svc_rows = list_services_with_errors(earliest, latest)
+    counts_map = {r['aem_service']: r.get('error_count', 0) for r in svc_rows}
+    # Map of aem_service -> program_name for later title enrichment
+    program_map = {r['aem_service']: r.get('program_name', '<unknown program name>') for r in svc_rows}
+    # Enrich with SKYSI ticket keys per TenantID
+    jira_base = os.getenv('JIRA_URL', 'https://jira.corp.adobe.com')
+    for r in svc_rows:
+        aem_service_val = r.get('aem_service', '')
+        skysi_key = ''
+        try:
+            lookup = search_skysi_by_aem_service(aem_service_val) if aem_service_val else {}
+            issues = lookup.get('issues') or []
+            if issues:
+                skysi_key = issues[0].get('key', '')
+        except Exception:
+            skysi_key = ''
+        r['skysi_key'] = skysi_key
+        if skysi_key:
+            r['skysi_url'] = f"{jira_base}/browse/{skysi_key}"
+        else:
+            r['skysi_url'] = ''
+    if not services:
+        services = [r['aem_service'] for r in svc_rows]
+
+    # 2) For each service, collect failing paths and errors using the same combined subsearch + time-window mapping as /find-skysi
+    report_items = []
+    for aem_service in services:
+        failures_by_path = get_latest_failures_by_path(aem_service, "prod", "publish", earliest=earliest, latest=latest, per_path_limit=10)
+        print(f"Failures by path for {aem_service}: {failures_by_path}")
+
+        # Single aemerror query with subsearch-generated OR windows across all failures
+        base_error = (
+            f'index=dx_aem_engineering sourcetype=aemerror level=ERROR '
+            f'aem_service={aem_service} aem_envType=prod aem_tier=publish '
+            '(*guideContainer.af.submit.jsp* OR *FormSubmitActionManagerServiceImpl* OR *AdaptiveFormSubmitServlet*) '
+            f'earliest="{earliest}" latest="{latest}" '
+        )
+        sub = (
+            '[ search index=dx_aem_engineering sourcetype=aemaccess '
+            f'aem_service={aem_service} aem_envType=prod aem_tier=publish '
+            '(path="/adobe/forms/af/submit*" OR path="*guideContainer.af.submit.jsp") code>=500 '
+            f'earliest="{earliest}" latest="{latest}" '
+            '| sort 0 - _time '
+            '| streamstats count as failCount by path '
+            '| where failCount <= 10 '
+            '| eval f_start=_time, f_end=_time+10 '
+            '| eval query="(_time>=" . f_start . " AND _time<=" . f_end . ")" '
+            '| stats values(query) as queries '
+            '| eval search="(" . mvjoin(queries," OR ") . ")" '
+            '| fields search ] '
+        )
+        final_query = base_error + sub + '| eval EventTimeFmt=strftime(_time,"%Y-%m-%d %H:%M:%S") | table EventTimeFmt msg'
+        print(f"Combined multi-window query (report) for {aem_service}: {final_query}")
+        rows = splunk_search_rows(final_query) or []
+
+        # Map rows back to paths via EventTimeFmt within [FailureTime, FailureTime+10s]
+        from datetime import datetime as _dt
+        windows = []
+        for p, times in failures_by_path.items():
+            for tstr in times:
+                try:
+                    sdt = _dt.strptime(tstr, "%Y-%m-%d %H:%M:%S")
+                except Exception:
+                    continue
+                edt = sdt + timedelta(seconds=10)
+                windows.append((p, sdt, edt))
+
+        path_to_msgs = {p: [] for p in failures_by_path.keys()}
+        path_to_seen = {p: set() for p in failures_by_path.keys()}
+        for r in rows:
+            et = (r.get('EventTimeFmt') or '').split('.')[0]
+            msg = (r.get('msg') or '').strip()
+            if not et or not msg:
+                continue
+            try:
+                evt_dt = _dt.strptime(et, "%Y-%m-%d %H:%M:%S")
+            except Exception:
+                continue
+            matched = None
+            for p, sdt, edt in windows:
+                if sdt <= evt_dt <= edt:
+                    matched = p
+                    break
+            if matched and msg not in path_to_seen[matched] and len(path_to_msgs[matched]) < 4:
+                path_to_msgs[matched].append(msg)
+                path_to_seen[matched].add(msg)
+
+        path_entries = []
+        for p, times in failures_by_path.items():
+            path_entries.append({
+                "path": p,
+                "time": ", ".join(times[:3]),
+                "messages": path_to_msgs.get(p, [])
+            })
+
+        report_items.append({
+            "aem_service": aem_service,
+            "error_count": counts_map.get(aem_service, 0),
+            "program_name": program_map.get(aem_service, '<unknown program name>'),
+            "paths": path_entries
+        })
+
+    # 3) Build a formatted PDF (H1/H2/H3, spacing, wrapped stack traces)
+    buf = BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=A4, leftMargin=36, rightMargin=36, topMargin=36, bottomMargin=36
+    )
+    styles = getSampleStyleSheet()
+    h1 = styles["Heading1"]
+    h2 = styles["Heading2"]
+    h3 = styles["Heading3"]
+    body = styles["BodyText"]
+    # Slightly adjust sizes
+    h1.fontSize = 18; h1.leading = 22; h1.textColor = colors.HexColor('#0D47A1')
+    h2.fontSize = 14; h2.leading = 18; h2.textColor = colors.HexColor('#1565C0')
+    h3.fontSize = 12; h3.leading = 16; h3.textColor = colors.HexColor('#1976D2')
+    code_style = ParagraphStyle(
+        name="Code",
+        parent=body,
+        fontName="Courier",
+        fontSize=8,
+        leading=10,
+        textColor=colors.black,
+    )
+    # Paragraph-based code style that wraps long tokens and supports splitting across pages
+    code_para_style = ParagraphStyle(
+        name="CodePara",
+        parent=body,
+        fontName="Courier",
+        fontSize=7,
+        leading=8,
+        textColor=colors.black,
+        wordWrap='CJK',
+        allowWidows=1,
+        allowOrphans=1,
+        splitLongWords=True,
+    )
+    msg_title_style = ParagraphStyle(
+        name='MsgTitle',
+        parent=body,
+        fontName='Helvetica-Bold',
+        fontSize=9,
+        leading=11,
+        textColor=colors.HexColor('#37474F'),
+    )
+
+    def header_footer(canv, _doc):
+        canv.saveState()
+        # Header band
+        canv.setFillColor(colors.HexColor('#E3F2FD'))
+        canv.rect(0, A4[1]-20, A4[0], 20, stroke=0, fill=1)
+        canv.setFillColor(colors.HexColor('#0D47A1'))
+        canv.setFont("Helvetica-Bold", 10)
+        canv.drawString(36, A4[1]-14, "Daily Forms Submit Errors Report")
+        # Footer
+        canv.setFillColor(colors.HexColor('#90A4AE'))
+        canv.setFont("Helvetica", 8)
+        canv.drawRightString(A4[0]-36, 14, f"Page {_doc.page}")
+        canv.restoreState()
+
+    def path_badge(path_text: str) -> Table:
+        p = Paragraph(path_text, ParagraphStyle(
+            name="PathBadge",
+            parent=h3,
+            textColor=colors.white,
+        ))
+        t = Table([[p]], colWidths=[A4[0]-72])
+        t.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (-1,-1), colors.HexColor('#1976D2')),
+            ('LEFTPADDING', (0,0), (-1,-1), 6),
+            ('RIGHTPADDING', (0,0), (-1,-1), 6),
+            ('TOPPADDING', (0,0), (-1,-1), 4),
+            ('BOTTOMPADDING', (0,0), (-1,-1), 4),
+            ('ROUNDEDCORNERS', (0,0), (-1,-1), 4),
+        ]))
+        return t
+
+    def code_block_wrapped(msg: str) -> Table:
+        # Escape XML entities for Paragraph
+        try:
+            from xml.sax.saxutils import escape as _xml_escape
+            safe = _xml_escape(msg)
+        except Exception:
+            safe = msg.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+
+        # Split into lines and create one row per line so the table can paginate across pages
+        lines = safe.split('\n')
+        rows = []
+        for line in lines:
+            # Ensure super-long tokens can wrap by inserting zero-width space hints every ~100 chars when no spaces
+            if len(line) > 120 and (' ' not in line):
+                chunks = [line[i:i+100] for i in range(0, len(line), 100)]
+                line = '\u200b'.join(chunks)
+            rows.append([Paragraph(line or ' ', code_para_style)])
+
+        t = Table(rows or [[Paragraph(' ', code_para_style)]], colWidths=[A4[0]-72])
+        t.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (-1,-1), colors.HexColor('#ECEFF1')),
+            ('BOX', (0,0), (-1,-1), 0.5, colors.HexColor('#B0BEC5')),
+            ('LEFTPADDING', (0,0), (-1,-1), 4),
+            ('RIGHTPADDING', (0,0), (-1,-1), 4),
+            ('TOPPADDING', (0,0), (-1,-1), 4),
+            ('BOTTOMPADDING', (0,0), (-1,-1), 4),
+        ]))
+        return t
+
+    story = []
+    story.append(Paragraph("Daily Forms Submit Errors Report", h1))
+    story.append(Paragraph(f"Range: {earliest or '<auto>'} -> {latest or '<auto>'}", ParagraphStyle(name='sub', parent=body, textColor=colors.HexColor('#455A64'))))
+    story.append(Spacer(1, 10))
+
+    # Summary table at top: TenantID, ProgramName, ErrorCount, SKYSI
+    if svc_rows:
+        header_style = ParagraphStyle(name='tblhdr', parent=body, textColor=colors.white, fontName='Helvetica-Bold')
+        cell_style = ParagraphStyle(name='tblcell', parent=body, textColor=colors.black)
+        data_rows = [[
+            Paragraph('TenantID', header_style),
+            Paragraph('ProgramName', header_style),
+            Paragraph('ErrorCount', header_style),
+            Paragraph('SKYSI', header_style)
+        ]]
+        for r in svc_rows:
+            skysi_key = r.get('skysi_key') or ''
+            skysi_url = r.get('skysi_url') or ''
+            if skysi_key and skysi_url:
+                skysi_cell = Paragraph(f'<link href="{skysi_url}">{skysi_key}</link>', cell_style)
+            else:
+                skysi_cell = Paragraph('-', cell_style)
+            data_rows.append([
+                Paragraph(r.get('aem_service',''), cell_style),
+                Paragraph(r.get('program_name','<unknown program name>'), cell_style),
+                Paragraph(str(r.get('error_count', 0)), cell_style),
+                skysi_cell
+            ])
+        col_widths = [150, A4[0]-72-150-80-90, 80, 90]
+        tbl = Table(data_rows, colWidths=col_widths)
+        tbl.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1565C0')),
+            ('TEXTCOLOR', (0,0), (-1,0), colors.white),
+            ('ALIGN', (2,1), (2,-1), 'RIGHT'),
+            ('ALIGN', (3,1), (3,-1), 'LEFT'),
+            ('GRID', (0,0), (-1,-1), 0.25, colors.HexColor('#B0BEC5')),
+            ('LEFTPADDING', (0,0), (-1,-1), 6),
+            ('RIGHTPADDING', (0,0), (-1,-1), 6),
+            ('TOPPADDING', (0,0), (-1,-1), 4),
+            ('BOTTOMPADDING', (0,0), (-1,-1), 4),
+        ]))
+        # Zebra striping for readability
+        for i in range(1, len(data_rows)):
+            if i % 2 == 0:
+                tbl.setStyle(TableStyle([
+                    ('BACKGROUND', (0,i), (-1,i), colors.HexColor('#ECEFF1')),
+                ]))
+        story.append(tbl)
+        story.append(Spacer(1, 12))
+
+    for item in report_items:
+        svc_title = (
+            f"Service: {item['aem_service']} "
+            f"Program Name: {item.get('program_name', '<unknown program name>')} "
+            f"(Failures: {item.get('error_count', 0)})"
+        )
+        story.append(Paragraph(svc_title, h2))
+        story.append(Spacer(1, 6))
+        for pe in item['paths'][:10]:
+            story.append(path_badge(f"Path: {pe['path']}"))
+            story.append(Spacer(1, 6))
+            if pe['time']:
+                story.append(Paragraph(f"Time: {pe['time']}", ParagraphStyle(name='time', parent=body, textColor=colors.HexColor('#546E7A'))))
+                story.append(Spacer(1, 6))
+            if not pe['messages']:
+                story.append(Paragraph("<no messages>", ParagraphStyle(name='nomsg', parent=body, textColor=colors.HexColor('#B71C1C'))))
+                story.append(Spacer(1, 10))
+                continue
+            for mi, m in enumerate(pe['messages'], start=1):
+                # Message heading
+                story.append(Paragraph(f"Message {mi}", msg_title_style))
+                story.append(Spacer(1, 4))
+                # limit to first 15 lines for readability
+                _lines = (m or '').split('\n')
+                if len(_lines) > 15:
+                    m_trunc = '\n'.join(_lines[:15]) + '\n...'
+                else:
+                    m_trunc = m
+                story.append(code_block_wrapped(m_trunc))
+                story.append(Spacer(1, 12))
+        story.append(Spacer(1, 12))
+
+    doc.build(story, onFirstPage=header_footer, onLaterPages=header_footer)
+    pdf = buf.getvalue()
+    buf.close()
+    return (pdf, 200, {
+        'Content-Type': 'application/pdf',
+        'Content-Disposition': 'attachment; filename="daily-forms-errors.pdf"'
+    })
 
 if __name__ == "__main__":
     app.run(debug=True, port=8000) 

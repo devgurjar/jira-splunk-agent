@@ -4,3 +4,4 @@ python-dotenv
 dotenv
 crewai
 flask
+reportlab>=4.0.0

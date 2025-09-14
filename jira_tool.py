@@ -141,7 +141,7 @@ def search_skysi_by_aem_service(aem_service: str) -> dict:
     # JQL: project = SKYSI AND summary ~ FormSubmitErrors AND status in (Open, "In Progress", New) AND text ~ aem_service
     jql = (
         'project = SKYSI AND issuetype = Incident AND Alert  ~ "FormSubmitErrors" AND '
-        'status in (Open, "In Progress", New) AND '
+        'status NOT IN (Resolved) AND '
         f'text ~ "{aem_service}"'
     )
     return jira_query_tool(jql)

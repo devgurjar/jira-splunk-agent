@@ -21,6 +21,7 @@ function toISTBackendFormat(date) {
 function App() {
   const [aemService, setAemService] = useState('');
   const [jiraResult, setJiraResult] = useState(null);
+  const [pathDetails, setPathDetails] = useState([]);
   const [aemFields, setAemFields] = useState(null);
   const [splunkResult, setSplunkResult] = useState(null);
   const [formsJiraKey, setFormsJiraKey] = useState(null);
@@ -107,15 +108,21 @@ function App() {
         return;
       }
       const findData = await findRes.json();
-      const issues = (findData && findData.issues) || [];
+      const skysi = (findData && findData.skysi) || {};
+      const paths = Array.isArray(findData?.paths) ? findData.paths : [];
+      const issues = Array.isArray(skysi.issues)
+        ? skysi.issues
+        : (Array.isArray(findData.issues) ? findData.issues : []);
       if (!issues.length) {
         setError('No open SKYSI ticket found for the provided aem_service.');
         setLoadingStep(-1);
         return;
       }
       // Show the found Jira summary immediately
-      setJiraResult(findData);
-      setLoadingStep(1);
+      setJiraResult(skysi);
+      setPathDetails(paths);
+      setLoadingStep(-1);
+      return;
 
       // Step 2: run the existing process with the first matching SKYSI key
       const selectedKey = issues[0].key;
@@ -192,6 +199,34 @@ function App() {
           </Typography>
           <Typography variant="subtitle1" color="text.secondary">{fields.summary}</Typography>
           <Divider sx={{ my: 1 }} />
+          {Array.isArray(pathDetails) && pathDetails.length > 0 && (
+            <Box sx={{ mt: 2 }}>
+              <Typography variant="subtitle2" gutterBottom>Recent failing paths (from access logs)</Typography>
+              {pathDetails.map((p, idx) => (
+                <Box key={idx} sx={{ mb: 2 }}>
+                  <Typography variant="body2" sx={{ fontWeight: 700, mb: 0.5 }}>
+                    {decodeBase64Path(p.path || 'Unknown path')}
+                  </Typography>
+                  {Array.isArray(p.times) && p.times.length > 0 && (
+                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
+                      Times: {p.times.join(', ')}
+                    </Typography>
+                  )}
+                  {Array.isArray(p.messages) && p.messages.length > 0 && (
+                    <Box component="ul" sx={{ pl: 2, mb: 0 }}>
+                      {p.messages.map((m, mi) => (
+                        <li key={mi}>
+                          <Box sx={{ bgcolor: '#f5f5f5', p: 1, borderRadius: 1, fontFamily: 'monospace', fontSize: 14, whiteSpace: 'pre-line', mb: 1 }}>
+                            {m}
+                          </Box>
+                        </li>
+                      ))}
+                    </Box>
+                  )}
+                </Box>
+              ))}
+            </Box>
+          )}
           {messagesByPath.length > 0 && (
             <Box sx={{ mt: 2 }}>
               <Typography variant="subtitle2" gutterBottom>Unique Splunk Error Messages by Path</Typography>
