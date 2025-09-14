@@ -5,7 +5,7 @@ import json
 from crewai import LLM, Agent, Task, Crew
 from jira_tool import jira_query_tool, create_jira_issue, add_jira_comment, link_jira_issues, get_linked_forms_jira, get_jira_comments, get_jira_status, search_skysi_by_aem_service
 from aem_extractor_tool import extract_aem_fields_from_description
-from splunk_tool import splunk_search_tool, splunk_search_rows, get_last_error_paths, list_services_with_errors, get_top_error_times, get_latest_failures_by_path, build_multi_window_error_query
+from splunk_tool import splunk_search_tool, splunk_search_rows, get_last_error_paths, list_services_with_errors, get_top_error_times, get_latest_failures_by_path, build_multi_window_error_query, list_services_total_submissions
 from datetime import datetime, timedelta
 from flask_cors import CORS
 from io import BytesIO
@@ -85,6 +85,7 @@ def build_report_data(earliest: str, latest: str, services: list[str] | None = N
     print(f"Services: {services}")
 
     # 2) Per-service aggregation
+    totals_map = list_services_total_submissions(earliest, latest)
     report_items = []
     for aem_service in services:
         failures_by_path = get_latest_failures_by_path(aem_service, "prod", "publish", earliest=earliest, latest=latest, per_path_limit=10)
@@ -153,9 +154,13 @@ def build_report_data(earliest: str, latest: str, services: list[str] | None = N
                 "messages": path_to_msgs.get(p, [])
             })
 
+        total_forms = totals_map.get(aem_service, 0)
+        print(f"Total forms for {aem_service}: {total_forms}")
         report_items.append({
             "aem_service": aem_service,
             "error_count": counts_map.get(aem_service, 0),
+            "total_form_submissions": total_forms,
+            "failure_rate_pct": round((counts_map.get(aem_service, 0) / total_forms) * 100, 2) if total_forms else 0.0,
             "program_name": program_map.get(aem_service, '<unknown program name>'),
             "paths": path_entries
         })
@@ -225,8 +230,13 @@ def render_dashboard_html(svc_rows: list, report_items: list, earliest: str, lat
                 parts.append("<div style='color:#B71C1C'>&lt;no messages&gt;</div>")
                 continue
             for idx, m in enumerate(msgs, start=1):
+                # Support both string messages and {time,msg} objects
+                try:
+                    text = m if isinstance(m, str) else (m.get('msg', '') if isinstance(m, dict) else str(m))
+                except Exception:
+                    text = str(m)
                 parts.append(f"<div class='msg-title'>Message {idx}</div>")
-                parts.append(f"<pre class='msg'>{html_escape(trunc15(m))}</pre>")
+                parts.append(f"<pre class='msg'>{html_escape(trunc15(text))}</pre>")
     parts.append("</body></html>")
     return ''.join(parts)
 
@@ -234,7 +244,7 @@ def render_dashboard_html(svc_rows: list, report_items: list, earliest: str, lat
 def report_refresh():
     """Compute and cache report JSON (to be triggered by cron)."""
     data = request.json or {}
-    earliest = data.get('earliest') or '-1d'
+    earliest = data.get('earliest') or '-15h'
     latest = data.get('latest') or 'now'
     services = data.get('aem_services')
 

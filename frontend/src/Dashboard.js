@@ -30,6 +30,7 @@ import LightModeIcon from '@mui/icons-material/LightMode';
 import AssessmentOutlinedIcon from '@mui/icons-material/AssessmentOutlined';
 import WarningAmberOutlinedIcon from '@mui/icons-material/WarningAmberOutlined';
 import AccessTimeOutlinedIcon from '@mui/icons-material/AccessTimeOutlined';
+import OpenInNewOutlinedIcon from '@mui/icons-material/OpenInNewOutlined';
 import { ThemeProvider, createTheme } from '@mui/material/styles';
 import CssBaseline from '@mui/material/CssBaseline';
 import Card from '@mui/material/Card';
@@ -113,6 +114,13 @@ export default function Dashboard() {
 
   const summaryRows = useMemo(() => Array.isArray(data?.svc_rows) ? data.svc_rows : [], [data]);
   const reportItemsRaw = useMemo(() => Array.isArray(data?.report_items) ? data.report_items : [], [data]);
+  const itemByService = useMemo(() => {
+    const m = {};
+    for (const it of reportItemsRaw) {
+      if (it && it.aem_service) m[it.aem_service] = it;
+    }
+    return m;
+  }, [reportItemsRaw]);
 
   const { reportItems, totals } = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -293,6 +301,21 @@ export default function Dashboard() {
                 </Card>
               </Grid>
             </Grid>
+            <Box sx={{ mb: 1, display: 'flex', justifyContent: 'flex-end' }}>
+              <Button
+                component="a"
+                href="https://splunk.or1.adobe.net/en-US/app/TA-aem_skyline/form_cs_product_error_dashboard?form.aem_envType=prod&form.programID=*&form.timePeriod.earliest=-24h%40h&form.timePeriod.latest=now&form.namespace=*&form.programEnvironment=*&form.aem_tier=publish"
+                target="_blank"
+                rel="noreferrer"
+                variant="outlined"
+                color="secondary"
+                size="small"
+                sx={{ textTransform: 'none', px: 1.5, py: 0.25 }}
+                endIcon={<OpenInNewOutlinedIcon fontSize="small" />}
+              >
+                For detailed analysis, visit this dashboard
+              </Button>
+            </Box>
             <Typography variant="h5" sx={{ mb: 1 }}>Summary</Typography>
             <TableContainer component={Paper} elevation={0} sx={{ border: '1px solid', borderColor: (t) => t.palette.divider }}>
               <Table size="medium">
@@ -305,6 +328,8 @@ export default function Dashboard() {
                     <TableCell sx={{ color: (t) => t.palette.mode === 'light' ? t.palette.text.primary : '#fff', fontWeight: 800, fontSize: '0.95rem' }}>TenantID</TableCell>
                     <TableCell sx={{ color: (t) => t.palette.mode === 'light' ? t.palette.text.primary : '#fff', fontWeight: 800, fontSize: '0.95rem' }}>ProgramName</TableCell>
                     <TableCell sx={{ color: (t) => t.palette.mode === 'light' ? t.palette.text.primary : '#fff', fontWeight: 800, fontSize: '0.95rem' }} align="right">ErrorCount</TableCell>
+                    <TableCell sx={{ color: (t) => t.palette.mode === 'light' ? t.palette.text.primary : '#fff', fontWeight: 800, fontSize: '0.95rem' }} align="right">TotalSubmissions</TableCell>
+                    <TableCell sx={{ color: (t) => t.palette.mode === 'light' ? t.palette.text.primary : '#fff', fontWeight: 800, fontSize: '0.95rem' }} align="right">Failure%</TableCell>
                     <TableCell sx={{ color: (t) => t.palette.mode === 'light' ? t.palette.text.primary : '#fff', fontWeight: 800, fontSize: '0.95rem' }}>SKYSI</TableCell>
                     <TableCell sx={{ color: (t) => t.palette.mode === 'light' ? t.palette.text.primary : '#fff', fontWeight: 800, fontSize: '0.95rem' }}>AEM CS Workspace</TableCell>
                     <TableCell sx={{ color: (t) => t.palette.mode === 'light' ? t.palette.text.primary : '#fff', fontWeight: 800, fontSize: '0.95rem' }} align="center">Action</TableCell>
@@ -316,6 +341,16 @@ export default function Dashboard() {
                       <TableCell sx={{ fontSize: '0.95rem' }}>{r.aem_service}</TableCell>
                       <TableCell sx={{ fontSize: '0.95rem' }}>{r.program_name || '<unknown program name>'}</TableCell>
                       <TableCell sx={{ fontSize: '0.95rem' }} align="right">{r.error_count || 0}</TableCell>
+                      <TableCell sx={{ fontSize: '0.95rem' }} align="right">{(() => {
+                        const ri = itemByService[r.aem_service] || {};
+                        const v = Number.isFinite(Number(r.total_form_submissions)) ? Number(r.total_form_submissions) : Number(ri.total_form_submissions || 0);
+                        return v;
+                      })()}</TableCell>
+                      <TableCell sx={{ fontSize: '0.95rem' }} align="right">{(() => {
+                        const ri = itemByService[r.aem_service] || {};
+                        const v = Number.isFinite(Number(r.failure_rate_pct)) ? Number(r.failure_rate_pct) : Number(ri.failure_rate_pct);
+                        return Number.isFinite(v) ? `${v}%` : '-';
+                      })()}</TableCell>
                       <TableCell sx={{ fontSize: '0.95rem' }}>
                         {r.skysi_key && r.skysi_url ? (
                           <Link href={r.skysi_url} target="_blank" rel="noreferrer">{r.skysi_key}</Link>

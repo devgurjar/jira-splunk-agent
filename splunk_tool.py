@@ -236,6 +236,40 @@ def list_services_with_errors(earliest: str = None, latest: str = None):
             })
     return out
 
+def list_services_total_submissions(earliest: str = None, latest: str = None):
+    terms = [
+        'index=dx_aem_engineering',
+        'sourcetype=aemaccess',
+        'aem_tier="publish"',
+        '(path="/adobe/forms/af/submit*" OR path="*guideContainer.af.submit.jsp")',
+        'aem_envType=prod',
+        'aem_program_id IN (*)',
+        'namespace="*"'
+    ]
+    base = ' '.join(terms)
+    if earliest and latest:
+        base += f' earliest="{earliest}" latest="{latest}"'
+    query = (
+        f'{base} '
+        '| lookup skyline_program_id_to_program_name program_id as aem_program_id OUTPUT program_name '
+        '| fillnull program_name value="<unknown program name>" '
+        '| stats count as TotalFormSubmission by aem_service, program_name '
+        '| sort - TotalFormSubmission'
+    )
+    # print(f"Splunk query for list services total submissions: {query}")
+    rows = splunk_search_rows(query)
+    # print(f"Rows for list services total submissions: {rows}")
+    totals = {}
+    for r in rows:
+        svc = r.get('aem_service') or ''
+        try:
+            total = int(r.get('TotalFormSubmission', '0'))
+        except Exception:
+            total = 0
+        if svc:
+            totals[svc] = total
+    return totals
+
 def get_top_error_times(aem_service: str, env_type: str, aem_tier: str, earliest: str = None, latest: str = None, limit: int = 10):
     # Use access logs with per-path streamstats to derive latest failure times
     path_to_times = get_latest_failures_by_path(aem_service, env_type, aem_tier, earliest, latest, per_path_limit=limit)
