@@ -42,7 +42,7 @@ def splunk_search_tool(query: str, llm=None, use_llm: bool = False):
     url = f"https://{config['splunk_host']}:{config['splunk_port']}/services/search/jobs"
     auth = (config['splunk_username'], config['splunk_password'])
     headers = {"Content-Type": "application/x-www-form-urlencoded"}
-    print(f"Splunk search is invoked with query")
+    # print(f"Splunk search is invoked with query")
     data = {
         "search": f"search {query}",
         "exec_mode": "blocking"
@@ -123,7 +123,7 @@ def splunk_search_tool(query: str, llm=None, use_llm: bool = False):
                                     msg = '\n'.join(msg_lines)
                                 extracted_fields["msg"] = msg
                         extracted.append(extracted_fields)
-                        print("Extracted fields: ", extracted_fields)
+                        # print("Extracted fields: ", extracted_fields)
                     return extracted
                 except Exception as e:
                     return f"Error parsing Splunk results: {e}\nRaw: {results_response.text}"
@@ -187,7 +187,7 @@ def get_last_error_paths(aem_service: str, env_type: str, aem_tier: str, earlies
         '| eval LastErrorTime=strftime(LastErrorTime, "%Y-%m-%d %H:%M:%S %Z") '
         '| table path, LastErrorTime'
     )
-    print(f"Splunk query for last error paths: {query}")
+    # print(f"Splunk query for last error paths: {query}")
     rows = splunk_search_rows(query)
     out = []
     for r in rows:
@@ -218,7 +218,7 @@ def list_services_with_errors(earliest: str = None, latest: str = None):
         '| stats count as ErrorCount by aem_service, program_name '
         '| sort - ErrorCount'
     )
-    print(f"Splunk query for list services with errors: {query}")
+    # print(f"Splunk query for list services with errors: {query}")
     rows = splunk_search_rows(query)
     out = []
     for r in rows:
@@ -275,9 +275,9 @@ def get_latest_failures_by_path(aem_service: str, env_type: str, aem_tier: str, 
         '| eval FailureTime=strftime(_time, "%Y-%m-%d %H:%M:%S") '
         '| table path, FailureTime'
     )
-    print(f"Splunk query for latest failures by path: {query}")
+    # print(f"Splunk query for latest failures by path: {query}")
     rows = splunk_search_rows(query)
-    print(f"Rows of paths with failures: {rows}")
+    # print(f"Rows of paths with failures: {rows}")
     path_to_times = {}
     for r in rows:
         p = r.get('path') or ''

@@ -62,7 +62,7 @@ def _resolve_cache_file_path() -> str:
 def build_report_data(earliest: str, latest: str, services: list[str] | None = None) -> dict:
     # 1) Top services and counts
     svc_rows = list_services_with_errors(earliest, latest)
-    print(f"Services with errors: {svc_rows}")
+    # print(f"Services with errors: {svc_rows}")
     counts_map = {r['aem_service']: r.get('error_count', 0) for r in svc_rows}
     program_map = {r['aem_service']: r.get('program_name', '<unknown program name>') for r in svc_rows}
     jira_base = os.getenv('JIRA_URL', 'https://jira.corp.adobe.com')
@@ -111,7 +111,7 @@ def build_report_data(earliest: str, latest: str, services: list[str] | None = N
         )
         final_query = base_error + sub + '| eval EventTimeFmt=strftime(_time,"%Y-%m-%d %H:%M:%S") | table EventTimeFmt msg'
         rows = splunk_search_rows(final_query) or []
-        print(f"Rows: {rows}")
+        # print(f"Rows: {rows}")
 
         from datetime import datetime as _dt
         windows = []
@@ -649,7 +649,7 @@ def find_skysi():
     failures_by_path = get_latest_failures_by_path(
         aem_service, 'prod', 'publish', earliest=earliest, latest=latest, per_path_limit=10
     )
-    print(f"Failures by path: {failures_by_path}")
+    # print(f"Failures by path: {failures_by_path}")
     # Build a single aemerror query with a subsearch that generates OR windows across all failures
     path_details = []
     base_error = (
@@ -673,10 +673,10 @@ def find_skysi():
         '| fields search ] '
     )
     final_query = base_error + sub + '| eval EventTimeFmt=strftime(_time,"%Y-%m-%d %H:%M:%S") | table EventTimeFmt msg'
-    print(f"Combined multi-window query: {final_query}")
+    # print(f"Combined multi-window query: {final_query}")
     rows = splunk_search_rows(final_query) or []
 
-    print(f"Rows: {rows}")
+    # print(f"Rows: {rows}")
 
     # Build time windows per path for mapping: [start, end] (10s)
     from datetime import datetime as _dt
@@ -719,7 +719,7 @@ def find_skysi():
         path_details.append({'path': p, 'times': times, 'messages': path_to_msgs.get(p, [])})
 
 
-    print(f"Path details: {path_details}")
+    # print(f"Path details: {path_details}")
 
     return jsonify({
         'skysi': result,
@@ -771,7 +771,7 @@ def report():
     report_items = []
     for aem_service in services:
         failures_by_path = get_latest_failures_by_path(aem_service, "prod", "publish", earliest=earliest, latest=latest, per_path_limit=10)
-        print(f"Failures by path for {aem_service}: {failures_by_path}")
+        # print(f"Failures by path for {aem_service}: {failures_by_path}")
 
         # Single aemerror query with subsearch-generated OR windows across all failures
         base_error = (
@@ -795,7 +795,7 @@ def report():
             '| fields search ] '
         )
         final_query = base_error + sub + '| eval EventTimeFmt=strftime(_time,"%Y-%m-%d %H:%M:%S") | table EventTimeFmt msg'
-        print(f"Combined multi-window query (report) for {aem_service}: {final_query}")
+        # print(f"Combined multi-window query (report) for {aem_service}: {final_query}")
         rows = splunk_search_rows(final_query) or []
 
         # Map rows back to paths via EventTimeFmt within [FailureTime, FailureTime+10s]
@@ -1209,4 +1209,4 @@ def report_dashboard():
     return (html, 200, { 'Content-Type': 'text/html; charset=utf-8' })
 
 if __name__ == "__main__":
-    app.run(debug=True, port=8000) 
+    app.run(debug=True, host='0.0.0.0', port=8000)
