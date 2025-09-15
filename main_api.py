@@ -59,6 +59,30 @@ def _resolve_cache_file_path() -> str:
             pass
         return fallback
 
+def _resolve_cache_dir_and_file() -> tuple[str, str]:
+    """Return (dir_path, default_file_path)."""
+    base = REPORT_CACHE_PATH
+    try:
+        is_dir_like = base.endswith(os.sep) or (os.path.splitext(base)[1] == '')
+        if is_dir_like:
+            dir_path = base
+        else:
+            if os.path.isdir(base):
+                dir_path = base
+            else:
+                dir_path = os.path.dirname(base) or os.getcwd()
+                os.makedirs(dir_path, exist_ok=True)
+                return (dir_path, base)
+        os.makedirs(dir_path, exist_ok=True)
+        return (dir_path, os.path.join(dir_path, 'report_cache.json'))
+    except Exception:
+        dir_path = os.path.dirname(__file__)
+        try:
+            os.makedirs(dir_path, exist_ok=True)
+        except Exception:
+            pass
+        return (dir_path, os.path.join(dir_path, 'report_cache.json'))
+
 def build_report_data(earliest: str, latest: str, services: list[str] | None = None) -> dict:
     # 1) Top services and counts
     svc_rows = list_services_with_errors(earliest, latest)
@@ -240,6 +264,22 @@ def render_dashboard_html(svc_rows: list, report_items: list, earliest: str, lat
     parts.append("</body></html>")
     return ''.join(parts)
 
+@app.route('/report-dates', methods=['GET'])
+def report_dates():
+    """List available dated cache files as YYYY-MM-DD, newest first."""
+    try:
+        dir_path, default_file = _resolve_cache_dir_and_file()
+        names = []
+        for fn in os.listdir(dir_path):
+            if fn.startswith('report_cache_') and fn.endswith('.json'):
+                mid = fn[len('report_cache_'):-len('.json')]
+                names.append(mid)
+        names = sorted(names, reverse=True)
+        return jsonify({"dates": names})
+    except Exception as e:
+        print(f"Failed to list report dates: {e}")
+        return jsonify({"dates": []})
+
 @app.route('/report-refresh', methods=['POST'])
 def report_refresh():
     """Compute and cache report JSON (to be triggered by cron)."""
@@ -250,21 +290,55 @@ def report_refresh():
 
     result = build_report_data(earliest, latest, services)
     REPORT_CACHE['data'] = result
+    dated_file = None
     try:
-        cache_file = _resolve_cache_file_path()
-        with open(cache_file, 'w', encoding='utf-8') as f:
-            json.dump(result, f, ensure_ascii=False, indent=2)
+        from datetime import datetime as _dt
+        dir_path, default_file = _resolve_cache_dir_and_file()
+        # Determine today's dated file name from generated_at (UTC date)
+        gen = result.get('generated_at', '')[:10]
+        try:
+            dt = _dt.strptime(gen, '%Y-%m-%d')
+        except Exception:
+            dt = _dt.utcnow()
+        dated_name = f"report_cache_{dt.strftime('%Y-%m-%d')}.json"
+        dated_file = os.path.join(dir_path, dated_name)
+        # Write dated file as primary
+        with open(dated_file, 'w', encoding='utf-8') as f2:
+            json.dump(result, f2, ensure_ascii=False, indent=2)
+        # Also write legacy latest snapshot for backward compatibility
+        try:
+            with open(default_file, 'w', encoding='utf-8') as f:
+                json.dump(result, f, ensure_ascii=False, indent=2)
+        except Exception as _e:
+            print(f"Failed to write latest cache file: {_e}")
     except Exception as e:
         print(f"Failed to write report cache file: {e}")
-    return jsonify({"status": "ok", "generated_at": result.get("generated_at"), "path": _resolve_cache_file_path()})
+    return jsonify({
+        "status": "ok",
+        "generated_at": result.get("generated_at"),
+        "path": dated_file or _resolve_cache_file_path()
+    })
 
 @app.route('/report-data', methods=['GET'])
 def report_data():
-    """Return cached JSON without rerunning Splunk queries."""
+    """Return cached JSON. Optional query: ?date=YYYY-MM-DD to fetch dated cache."""
+    date_arg = request.args.get('date', '').strip()
     try:
-        cache_file = _resolve_cache_file_path()
-        if os.path.exists(cache_file):
-            with open(cache_file, 'r', encoding='utf-8') as f:
+        dir_path, default_file = _resolve_cache_dir_and_file()
+        target_file = default_file
+        if date_arg:
+            candidate = os.path.join(dir_path, f'report_cache_{date_arg}.json')
+            if os.path.exists(candidate):
+                target_file = candidate
+        else:
+            # No date specified: prefer today's dated cache if present
+            from datetime import datetime as _dt
+            today = _dt.utcnow().strftime('%Y-%m-%d')
+            today_file = os.path.join(dir_path, f'report_cache_{today}.json')
+            if os.path.exists(today_file):
+                target_file = today_file
+        if os.path.exists(target_file):
+            with open(target_file, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             REPORT_CACHE['data'] = data
             return jsonify(data)
@@ -276,12 +350,24 @@ def report_data():
 
 @app.route('/report-dashboard-view', methods=['GET'])
 def report_dashboard_view():
-    """Render dashboard HTML from cached JSON only."""
+    """Render dashboard HTML from cached JSON only. Optional ?date=YYYY-MM-DD."""
     cached = None
+    date_arg = request.args.get('date', '').strip()
     try:
-        cache_file = _resolve_cache_file_path()
-        if os.path.exists(cache_file):
-            with open(cache_file, 'r', encoding='utf-8') as f:
+        dir_path, default_file = _resolve_cache_dir_and_file()
+        target_file = default_file
+        if date_arg:
+            candidate = os.path.join(dir_path, f'report_cache_{date_arg}.json')
+            if os.path.exists(candidate):
+                target_file = candidate
+        else:
+            from datetime import datetime as _dt
+            today = _dt.utcnow().strftime('%Y-%m-%d')
+            today_file = os.path.join(dir_path, f'report_cache_{today}.json')
+            if os.path.exists(today_file):
+                target_file = today_file
+        if os.path.exists(target_file):
+            with open(target_file, 'r', encoding='utf-8') as f:
                 cached = json.load(f)
             REPORT_CACHE['data'] = cached
         else:

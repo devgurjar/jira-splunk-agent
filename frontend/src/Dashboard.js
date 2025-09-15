@@ -21,7 +21,10 @@ import {
   Stack,
   Divider,
   Link,
-  Button
+  Button,
+  FormControl,
+  Select,
+  MenuItem
 } from '@mui/material';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
@@ -32,6 +35,7 @@ import WarningAmberOutlinedIcon from '@mui/icons-material/WarningAmberOutlined';
 import AccessTimeOutlinedIcon from '@mui/icons-material/AccessTimeOutlined';
 import OpenInNewOutlinedIcon from '@mui/icons-material/OpenInNewOutlined';
 import { ThemeProvider, createTheme } from '@mui/material/styles';
+import CalendarMonthOutlinedIcon from '@mui/icons-material/CalendarMonthOutlined';
 import CssBaseline from '@mui/material/CssBaseline';
 import Card from '@mui/material/Card';
 import CardContent from '@mui/material/CardContent';
@@ -88,6 +92,8 @@ export default function Dashboard() {
   const [data, setData] = useState(null);
   const query = '';
   const [themeMode, setThemeMode] = useState('light'); // light | dark
+  const [reportDate, setReportDate] = useState(''); // YYYY-MM-DD or '' for latest
+  const [availableDates, setAvailableDates] = useState([]);
 
   useEffect(() => {
     let isMounted = true;
@@ -95,7 +101,8 @@ export default function Dashboard() {
       setLoading(true);
       setError('');
       try {
-        const res = await fetch(`${API_BASE}/report-data`);
+        const url = reportDate ? `${API_BASE}/report-data?date=${encodeURIComponent(reportDate)}` : `${API_BASE}/report-data`;
+        const res = await fetch(url);
         if (!res.ok) {
           const err = await res.json().catch(() => ({}));
           throw new Error(err.error || `Failed to load cached report data (${res.status})`);
@@ -110,7 +117,29 @@ export default function Dashboard() {
     }
     fetchData();
     return () => { isMounted = false; };
-  }, [API_BASE]);
+  }, [API_BASE, reportDate]);
+
+  useEffect(() => {
+    let isMounted = true;
+    async function fetchDates() {
+      try {
+        const res = await fetch(`${API_BASE}/report-dates`);
+        if (!res.ok) return;
+        const j = await res.json();
+        if (isMounted) {
+          const arr = Array.isArray(j?.dates) ? j.dates : [];
+          setAvailableDates(arr);
+          // Default to today's date if present and nothing chosen yet
+          if (!reportDate && arr.length > 0) {
+            const today = new Date().toISOString().slice(0,10);
+            if (arr.includes(today)) setReportDate(today);
+          }
+        }
+      } catch {}
+    }
+    fetchDates();
+    return () => { isMounted = false; };
+  }, [API_BASE, reportDate]);
 
   const summaryRows = useMemo(() => Array.isArray(data?.svc_rows) ? data.svc_rows : [], [data]);
   const reportItemsRaw = useMemo(() => Array.isArray(data?.report_items) ? data.report_items : [], [data]);
@@ -223,6 +252,45 @@ export default function Dashboard() {
                 </Grid>
               ))}
             </Grid>
+            <Grid container spacing={2} sx={{ mb: 2 }}>
+              <Grid item xs={12} sm={6} md={4}>
+                <FormControl fullWidth size="small" sx={{
+                  '& .MuiOutlinedInput-root': {
+                    bgcolor: (t) => t.palette.mode === 'light' ? '#fff' : 'rgba(255,255,255,0.06)',
+                    borderRadius: 999,
+                  },
+                  '& .MuiOutlinedInput-notchedOutline': {
+                    borderColor: (t) => t.palette.divider
+                  },
+                  '&:hover .MuiOutlinedInput-notchedOutline': {
+                    borderColor: (t) => t.palette.primary.main
+                  }
+                }}>
+                  <Select
+                    id="report-date-select"
+                    value={reportDate}
+                    onChange={(e) => setReportDate(e.target.value)}
+                    displayEmpty
+                    disabled
+                    renderValue={(value) => {
+                      const label = value ? value : 'Loading report dates…';
+                      return (
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                          <CalendarMonthOutlinedIcon sx={{ fontSize: 18, color: 'text.secondary' }} />
+                          <span>{label}</span>
+                        </Box>
+                      );
+                    }}
+                    MenuProps={{ PaperProps: { sx: { maxHeight: 360, borderRadius: 2 } } }}
+                  >
+                    <MenuItem value=""><em>Latest</em></MenuItem>
+                    {availableDates.map((d) => (
+                      <MenuItem key={d} value={d}>{d}</MenuItem>
+                    ))}
+                  </Select>
+                </FormControl>
+              </Grid>
+            </Grid>
             <Card elevation={0}>
               <CardContent>
                 <Skeleton variant="rectangular" height={280} />
@@ -238,7 +306,7 @@ export default function Dashboard() {
           <Box>
             {/* Revenue impact alert removed per request */}
             <Grid container spacing={2} sx={{ mb: 2 }}>
-              <Grid item xs={12} sm={4} md={3}>
+              <Grid item xs={12} sm={4} md={2}>
                 <Card elevation={0}>
                   <CardContent>
                     <Stack direction="row" spacing={2} alignItems="center">
@@ -253,7 +321,7 @@ export default function Dashboard() {
                   </CardContent>
                 </Card>
               </Grid>
-              <Grid item xs={12} sm={4} md={3}>
+              <Grid item xs={12} sm={4} md={2}>
                 <Card elevation={0}>
                   <CardContent>
                     <Stack direction="row" spacing={2} alignItems="center">
@@ -268,7 +336,7 @@ export default function Dashboard() {
                   </CardContent>
                 </Card>
               </Grid>
-              <Grid item xs={12} sm={4} md={3}>
+              <Grid item xs={12} sm={4} md={2}>
                 <Card elevation={0}>
                   <CardContent>
                     <Stack direction="row" spacing={2} alignItems="center">
@@ -283,7 +351,7 @@ export default function Dashboard() {
                   </CardContent>
                 </Card>
               </Grid>
-              <Grid item xs={12} sm={4} md={3}>
+              <Grid item xs={12} sm={4} md={2}>
                 <Card elevation={0}>
                   <CardContent>
                     <Stack direction="row" spacing={2} alignItems="center">
@@ -300,7 +368,42 @@ export default function Dashboard() {
                   </CardContent>
                 </Card>
               </Grid>
+              <Grid item xs={12} sm={8} md={4}>
+                <Card elevation={0}>
+                  <CardContent>
+                    <Stack direction="row" spacing={2} alignItems="center">
+                      <Avatar sx={{ bgcolor: 'secondary.main' }}>
+                        <CalendarMonthOutlinedIcon htmlColor="#fff" />
+                      </Avatar>
+                      <Box sx={{ flex: 1 }}>
+                        <Typography variant="caption" sx={{ color: 'text.secondary' }}>Report date</Typography>
+                        <FormControl size="small" fullWidth>
+                          <Select
+                            id="report-date-select"
+                            value={reportDate}
+                            onChange={(e) => setReportDate(e.target.value)}
+                            displayEmpty
+                            renderValue={(value) => (value ? value : 'Latest')}
+                            MenuProps={{ PaperProps: { sx: { maxHeight: 360, borderRadius: 2 } } }}
+                            sx={{
+                              mt: 0.5,
+                              '& .MuiOutlinedInput-notchedOutline': { borderColor: (t) => t.palette.divider },
+                              '& .MuiSelect-select': { py: 0.5 }
+                            }}
+                          >
+                            <MenuItem value=""><em>Latest</em></MenuItem>
+                            {availableDates.map((d) => (
+                              <MenuItem key={d} value={d}>{d}</MenuItem>
+                            ))}
+                          </Select>
+                        </FormControl>
+                      </Box>
+                    </Stack>
+                  </CardContent>
+                </Card>
+              </Grid>
             </Grid>
+            {/* Removed duplicate dropdown below metrics row */}
             <Box sx={{ mb: 1, display: 'flex', justifyContent: 'flex-end' }}>
               <Stack direction="row" spacing={1}>
                 <Button
