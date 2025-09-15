@@ -136,7 +136,14 @@ export default function Dashboard() {
       setLoading(true);
       setError('');
       try {
-        const url = reportDate ? `${API_BASE}/report-data?date=${encodeURIComponent(reportDate)}` : `${API_BASE}/report-data`;
+        let url = '';
+        if (reportDate === 'WEEKLY') {
+          url = `${API_BASE}/report-week`;
+        } else if (reportDate) {
+          url = `${API_BASE}/report-data?date=${encodeURIComponent(reportDate)}`;
+        } else {
+          url = `${API_BASE}/report-data`;
+        }
         const res = await fetch(url);
         if (!res.ok) {
           const err = await res.json().catch(() => ({}));
@@ -418,7 +425,7 @@ export default function Dashboard() {
                             value={reportDate}
                             onChange={(e) => setReportDate(e.target.value)}
                             displayEmpty
-                            renderValue={(value) => (value ? value : 'Latest')}
+                            renderValue={(value) => (value === 'WEEKLY' ? 'Latest Week (Sat–Fri)' : (value ? value : 'Latest'))}
                             MenuProps={{ PaperProps: { sx: { maxHeight: 360, borderRadius: 2 } } }}
                             sx={{
                               mt: 0.5,
@@ -426,6 +433,7 @@ export default function Dashboard() {
                               '& .MuiSelect-select': { py: 0.5 }
                             }}
                           >
+                            <MenuItem value="WEEKLY">Latest Week (Sat–Fri)</MenuItem>
                             <MenuItem value=""><em>Latest</em></MenuItem>
                             {availableDates.map((d) => (
                               <MenuItem key={d} value={d}>{d}</MenuItem>

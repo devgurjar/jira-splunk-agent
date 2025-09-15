@@ -348,6 +348,173 @@ def report_data():
         return jsonify(REPORT_CACHE['data'])
     return jsonify({"error": "no cached data; POST /report-refresh first"}), 404
 
+@app.route('/report-week', methods=['GET'])
+def report_week():
+    """Merge daily caches for a Saturday→Friday week and return a weekly report.
+
+    Query params:
+      - friday: YYYY-MM-DD (optional). If omitted, uses the most recent Friday (UTC today or earlier).
+    """
+    from datetime import datetime as _dt, timedelta as _td
+    friday_arg = (request.args.get('friday') or '').strip()
+    try:
+        dir_path, _default_file = _resolve_cache_dir_and_file()
+        # Determine target Friday (UTC)
+        if friday_arg:
+            friday = _dt.strptime(friday_arg, '%Y-%m-%d')
+        else:
+            today = _dt.utcnow().date()
+            # weekday(): Monday=0 ... Sunday=6 → Friday=4
+            # If today is before Friday in the week, go back to last Friday
+            delta_days = (today.weekday() - 4) % 7
+            friday = _dt(today.year, today.month, today.day) - _td(days=delta_days)
+        # Build date list Saturday→Friday inclusive
+        start = friday - _td(days=6)
+        date_list = [(start + _td(days=i)).strftime('%Y-%m-%d') for i in range(7)]
+
+        # Load available daily reports (support both YYYY-MM-DD and YYYY_MM_DD filenames)
+        daily_reports = []
+        try:
+            import re
+            files = []
+            for fn in os.listdir(dir_path):
+                m = re.match(r'^report_cache_(\d{4})[-_](\d{2})[-_](\d{2})\.json$', fn)
+                if not m:
+                    continue
+                y, mo, da = m.groups()
+                try:
+                    d_obj = _dt(int(y), int(mo), int(da))
+                except Exception:
+                    continue
+                if start.date() <= d_obj.date() <= friday.date():
+                    files.append((d_obj.date(), os.path.join(dir_path, fn)))
+            # Sort by date ascending
+            files.sort(key=lambda t: t[0])
+            for _d, fp in files:
+                try:
+                    with open(fp, 'r', encoding='utf-8') as f:
+                        daily_reports.append(json.load(f))
+                except Exception as _e:
+                    print(f"Failed to read daily cache {fp}: {_e}")
+        except Exception as _e:
+            print(f"Failed to enumerate daily caches in {dir_path}: {_e}")
+
+        if not daily_reports:
+            return jsonify({"error": "No daily caches found for requested week", "week": {"start": start.strftime('%Y-%m-%d'), "friday": friday.strftime('%Y-%m-%d')}}), 404
+
+        # Aggregate per-service
+        from collections import defaultdict
+        error_count_by_service = defaultdict(int)
+        total_submissions_by_service = defaultdict(int)
+        program_name_by_service = {}
+        skysi_by_service = {}
+        # path -> set of msgs (unique by text), also keep (time,msg)
+        messages_by_service_and_path = defaultdict(lambda: defaultdict(dict))  # svc->{path->{msg_text: time}}
+
+        for rep in daily_reports:
+            items = rep.get('report_items') or []
+            svc_rows = rep.get('svc_rows') or []
+            # Use svc_rows to capture SKYSI and program name if present
+            for r in svc_rows:
+                svc = r.get('aem_service') or ''
+                if not svc:
+                    continue
+                program = r.get('program_name')
+                if program and svc not in program_name_by_service:
+                    program_name_by_service[svc] = program
+                skysi_key = r.get('skysi_key')
+                skysi_url = r.get('skysi_url')
+                if skysi_key and svc not in skysi_by_service:
+                    skysi_by_service[svc] = {"skysi_key": skysi_key, "skysi_url": skysi_url}
+
+            for it in items:
+                svc = it.get('aem_service') or ''
+                if not svc:
+                    continue
+                error_count_by_service[svc] += int(it.get('error_count') or 0)
+                total_submissions_by_service[svc] += int(it.get('total_form_submissions') or 0)
+                if svc not in program_name_by_service:
+                    pn = it.get('program_name')
+                    if pn:
+                        program_name_by_service[svc] = pn
+                for pe in (it.get('paths') or []):
+                    p = pe.get('path') or ''
+                    if not p:
+                        continue
+                    for m in (pe.get('messages') or []):
+                        # messages are either string or {time,msg}
+                        if isinstance(m, dict):
+                            msg_text = (m.get('msg') or '').strip()
+                            msg_time = (m.get('time') or '').strip()
+                        else:
+                            msg_text = str(m).strip()
+                            msg_time = ''
+                        if not msg_text:
+                            continue
+                        # store first seen time for this text
+                        if msg_text not in messages_by_service_and_path[svc][p]:
+                            messages_by_service_and_path[svc][p][msg_text] = msg_time
+
+        # Build weekly structures
+        weekly_services = sorted(error_count_by_service.keys(), key=lambda s: error_count_by_service[s], reverse=True)
+
+        weekly_svc_rows = []
+        for svc in weekly_services:
+            skysi = skysi_by_service.get(svc) or {}
+            weekly_svc_rows.append({
+                'aem_service': svc,
+                'program_name': program_name_by_service.get(svc, '<unknown program name>'),
+                'error_count': error_count_by_service[svc],
+                'skysi_key': skysi.get('skysi_key', ''),
+                'skysi_url': skysi.get('skysi_url', ''),
+            })
+
+        weekly_report_items = []
+        for svc in weekly_services:
+            path_entries = []
+            for p, msg_map in messages_by_service_and_path[svc].items():
+                # limit to 10 unique messages per path
+                limited_msgs = []
+                for idx, (txt, tme) in enumerate(msg_map.items()):
+                    if idx >= 10:
+                        break
+                    limited_msgs.append({'time': tme, 'msg': txt} if tme else {'msg': txt})
+                # derive up to 3 distinct times for the badge from messages
+                times = [m.get('time') for m in limited_msgs if isinstance(m, dict) and m.get('time')]
+                times = [t for t in times if t]
+                badge_time = ', '.join(times[:3]) if times else ''
+                path_entries.append({'path': p, 'time': badge_time, 'messages': limited_msgs})
+
+            total_forms = total_submissions_by_service[svc]
+            errs = error_count_by_service[svc]
+            failure_pct = round((errs / total_forms) * 100, 2) if total_forms else 0.0
+            weekly_report_items.append({
+                'aem_service': svc,
+                'error_count': errs,
+                'total_form_submissions': total_forms,
+                'failure_rate_pct': failure_pct,
+                'program_name': program_name_by_service.get(svc, '<unknown program name>'),
+                'paths': path_entries,
+            })
+
+        weekly = {
+            'generated_at': _dt.utcnow().isoformat() + 'Z',
+            'earliest': start.strftime('%Y-%m-%d 00:00:00'),
+            'latest': friday.strftime('%Y-%m-%d 23:59:59'),
+            'services': weekly_services,
+            'svc_rows': weekly_svc_rows,
+            'report_items': weekly_report_items,
+            'week': {
+                'start': start.strftime('%Y-%m-%d'),
+                'friday': friday.strftime('%Y-%m-%d'),
+                'dates': date_list,
+            }
+        }
+        return jsonify(weekly)
+    except Exception as e:
+        print(f"Failed to build weekly report: {e}")
+        return jsonify({"error": "Failed to build weekly report"}), 500
+
 @app.route('/report-dashboard-view', methods=['GET'])
 def report_dashboard_view():
     """Render dashboard HTML from cached JSON only. Optional ?date=YYYY-MM-DD."""
