@@ -85,6 +85,41 @@ function getProgramFromAemService(aemService) {
   }
 }
 
+// Best-effort clipboard copy that works on non-secure origins too
+async function copyToClipboard(text) {
+  const value = String(text || '');
+  try {
+    if (
+      typeof navigator !== 'undefined' &&
+      navigator.clipboard &&
+      typeof navigator.clipboard.writeText === 'function'
+    ) {
+      await navigator.clipboard.writeText(value);
+      return true;
+    }
+  } catch (_) {
+    // fall through to legacy path
+  }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = value;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.top = '-1000px';
+    ta.style.left = '-1000px';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    ta.setSelectionRange(0, ta.value.length);
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return ok;
+  } catch (_) {
+    return false;
+  }
+}
+
 export default function Dashboard() {
   const API_BASE = process.env.REACT_APP_API_BASE || `${window.location.protocol}//${window.location.hostname}:8000`;
   const [loading, setLoading] = useState(true);
@@ -543,7 +578,7 @@ export default function Dashboard() {
                                   {truncateLines(text, 20)}
                                 </Box>
                                 <Box sx={{ display: 'flex', justifyContent: 'flex-end' }}>
-                                  <IconButton size="small" aria-label="copy" onClick={() => navigator.clipboard.writeText(text)}>
+                                  <IconButton size="small" aria-label="copy" onClick={() => copyToClipboard(text)}>
                                     <ContentCopyIcon fontSize="inherit" />
                                   </IconButton>
                                 </Box>
