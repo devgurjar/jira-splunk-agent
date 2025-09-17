@@ -123,7 +123,7 @@ def build_report_data(earliest: str, latest: str, services: list[str] | None = N
         sub = (
             '[ search index=dx_aem_engineering sourcetype=aemaccess '
             f'aem_service={aem_service} aem_envType=prod aem_tier=publish '
-            '(path="/adobe/forms/af/submit*" OR path="*guideContainer.af.submit.jsp") code>=500 '
+            '"*guideContainer.af.submit.jsp" code>=500 '
             f'earliest="{earliest}" latest="{latest}" '
             '| sort 0 - _time '
             '| streamstats count as failCount by path '
@@ -174,7 +174,7 @@ def build_report_data(earliest: str, latest: str, services: list[str] | None = N
         for p, times in failures_by_path.items():
             path_entries.append({
                 "path": p,
-                "time": ", ".join(times[:3]),
+                "time": ", ".join(times[:10]),
                 "messages": path_to_msgs.get(p, [])
             })
 
@@ -482,7 +482,7 @@ def report_week():
                 # derive up to 3 distinct times for the badge from messages
                 times = [m.get('time') for m in limited_msgs if isinstance(m, dict) and m.get('time')]
                 times = [t for t in times if t]
-                badge_time = ', '.join(times[:3]) if times else ''
+                badge_time = ', '.join(times[:10]) if times else ''
                 path_entries.append({'path': p, 'time': badge_time, 'messages': limited_msgs})
 
             total_forms = total_submissions_by_service[svc]
@@ -546,6 +546,48 @@ def report_dashboard_view():
         return ("No cached data. Please POST /report-refresh first.", 404, { 'Content-Type': 'text/plain; charset=utf-8' })
     html = render_dashboard_html(cached.get('svc_rows', []), cached.get('report_items', []), cached.get('earliest',''), cached.get('latest',''))
     return (html, 200, { 'Content-Type': 'text/html; charset=utf-8' })
+
+@app.route('/skyops-last7', methods=['GET'])
+def skyops_last7():
+    """Fetch SKYOPS issues created in the last N days (default 7) filtered by labels and component.
+
+    Query params:
+      - days: integer, defaults to 7
+    """
+    try:
+        days = int(request.args.get('days', '7'))
+    except Exception:
+        days = 7
+    # Combined JQL: SKYOPS and FORMS (Adaptive Forms components) created in last N days
+    jql = (
+        '('
+        '  ('
+        '    project = SKYOPS '
+        '    AND labels in ("Adaptive-Forms", "af-submission-errors") '
+        '    AND component = "CSME Escalation to Customer"'
+        '  ) '
+        '  OR '
+        '  ('
+        '    project = FORMS '
+        '    AND component in ("Adaptive Forms - Runtime", "Adaptive Forms - Core Components") '
+        '    AND labels = "af-submission-errors"'
+        '  )'
+        ') '
+        f'AND created >= -{days}d'
+    )
+    result = jira_query_tool(jql) or {}
+    issues_out = []
+    for it in (result.get('issues') or []):
+        key = it.get('key')
+        fields = it.get('fields') or {}
+        issues_out.append({
+            'key': key,
+            'summary': fields.get('summary', ''),
+            'status': (fields.get('status') or {}).get('name', ''),
+            'created': fields.get('created', ''),
+            'assignee': (fields.get('assignee') or {}).get('displayName', ''),
+        })
+    return jsonify({'count': len(issues_out), 'issues': issues_out, 'jql': jql})
 
 class JiraAgent:
     def __init__(self, llm=None, tools=[]):

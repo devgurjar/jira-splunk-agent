@@ -43,6 +43,7 @@ import Grid from '@mui/material/Grid';
 import Tooltip from '@mui/material/Tooltip';
 import Avatar from '@mui/material/Avatar';
 import Skeleton from '@mui/material/Skeleton';
+import TablePagination from '@mui/material/TablePagination';
 
 function decodeBase64Path(path) {
   try {
@@ -82,6 +83,31 @@ function getProgramFromAemService(aemService) {
     return match && match[1] ? match[1] : '';
   } catch (e) {
     return '';
+  }
+}
+
+function parseJiraDateToDate(dateStr) {
+  try {
+    if (!dateStr) return null;
+    // Normalize timezone like +0000 -> +00:00 for Date parser compatibility
+    const fixed = String(dateStr).replace(/([+-]\d{2})(\d{2})$/, '$1:$2');
+    const d = new Date(fixed);
+    return isNaN(d.getTime()) ? null : d;
+  } catch {
+    return null;
+  }
+}
+
+function formatToIST(dateStr) {
+  const d = parseJiraDateToDate(dateStr);
+  if (!d) return dateStr || '';
+  try {
+    const opts = { timeZone: 'Asia/Kolkata', hour12: false };
+    const date = d.toLocaleDateString('en-CA', { ...opts, year: 'numeric', month: '2-digit', day: '2-digit' });
+    const time = d.toLocaleTimeString('en-GB', { ...opts, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    return `${date} ${time} IST`;
+  } catch {
+    return d.toISOString();
   }
 }
 
@@ -129,6 +155,11 @@ export default function Dashboard() {
   const [themeMode, setThemeMode] = useState('light'); // light | dark
   const [reportDate, setReportDate] = useState(''); // YYYY-MM-DD or '' for latest
   const [availableDates, setAvailableDates] = useState([]);
+  const [skyopsLoading, setSkyopsLoading] = useState(false);
+  const [skyopsError, setSkyopsError] = useState('');
+  const [skyopsIssues, setSkyopsIssues] = useState([]);
+  const [skyopsPage, setSkyopsPage] = useState(0);
+  const [skyopsRowsPerPage, setSkyopsRowsPerPage] = useState(10);
 
   useEffect(() => {
     let isMounted = true;
@@ -475,8 +506,80 @@ export default function Dashboard() {
                 >
                   Go to this wiki for rotary and insights
                 </Button>
+                <Button
+                  variant="contained"
+                  color="primary"
+                  size="small"
+                  sx={{ textTransform: 'none', px: 1.5, py: 0.25 }}
+                  disabled={skyopsLoading}
+                  onClick={async () => {
+                    setSkyopsError('');
+                    setSkyopsLoading(true);
+                    setSkyopsIssues([]);
+                    try {
+                      const res = await fetch(`${API_BASE}/skyops-last7`);
+                      if (!res.ok) {
+                        const err = await res.json().catch(() => ({}));
+                        throw new Error(err.error || `Failed to fetch SKYOPS (${res.status})`);
+                      }
+                      const j = await res.json();
+                      setSkyopsIssues(Array.isArray(j?.issues) ? j.issues : []);
+                    } catch (e) {
+                      setSkyopsError(e.message || 'Failed to fetch SKYOPS');
+                    } finally {
+                      setSkyopsLoading(false);
+                    }
+                  }}
+                >
+                  {skyopsLoading ? 'Loading tickets…' : 'Fetch SKYOPS & FORMS (last 7d)'}
+                </Button>
               </Stack>
             </Box>
+            {!!skyopsError && <Alert severity="error" sx={{ mb: 2 }}>{skyopsError}</Alert>}
+            {skyopsIssues.length > 0 && (
+              <Card elevation={0} sx={{ mb: 2 }}>
+                <CardContent>
+                  <Typography variant="h5" sx={{ mb: 1 }}>SKYOPS & FORMS (last 7 days)</Typography>
+                  <TableContainer component={Paper} elevation={0} sx={{ border: '1px solid', borderColor: (t) => t.palette.divider }}>
+                    <Table size="medium">
+                      <TableHead>
+                        <TableRow>
+                          <TableCell sx={{ fontWeight: 800 }}>Jira</TableCell>
+                          <TableCell sx={{ fontWeight: 800 }}>Summary</TableCell>
+                          <TableCell sx={{ fontWeight: 800 }}>Status</TableCell>
+                          <TableCell sx={{ fontWeight: 800 }}>Created</TableCell>
+                          <TableCell sx={{ fontWeight: 800 }}>Assignee</TableCell>
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {skyopsIssues
+                          .slice(skyopsPage * skyopsRowsPerPage, skyopsPage * skyopsRowsPerPage + skyopsRowsPerPage)
+                          .map((it) => (
+                          <TableRow key={it.key} hover>
+                            <TableCell>
+                              <Link href={`https://jira.corp.adobe.com/browse/${it.key}`} target="_blank" rel="noreferrer">{it.key}</Link>
+                            </TableCell>
+                            <TableCell>{it.summary || '-'}</TableCell>
+                            <TableCell>{it.status || '-'}</TableCell>
+                            <TableCell>{formatToIST(it.created) || '-'}</TableCell>
+                            <TableCell>{it.assignee || '-'}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
+                  <TablePagination
+                    component="div"
+                    count={skyopsIssues.length}
+                    page={skyopsPage}
+                    onPageChange={(_, p) => setSkyopsPage(p)}
+                    rowsPerPage={skyopsRowsPerPage}
+                    onRowsPerPageChange={(e) => { setSkyopsRowsPerPage(parseInt(e.target.value, 10)); setSkyopsPage(0); }}
+                    rowsPerPageOptions={[5,10,25,50]}
+                  />
+                </CardContent>
+              </Card>
+            )}
             <Typography variant="h5" sx={{ mb: 1 }}>Summary</Typography>
             <TableContainer component={Paper} elevation={0} sx={{ border: '1px solid', borderColor: (t) => t.palette.divider }}>
               <Table size="medium">
