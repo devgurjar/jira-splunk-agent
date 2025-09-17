@@ -554,8 +554,9 @@ def skyops_last7():
     Query params:
       - days: integer, defaults to 7
     """
-    start = (request.args.get('start') or '').strip()  # YYYY-MM-DD or full datetime
+    start = (request.args.get('start') or '').strip()  # YYYY-MM-DD
     end = (request.args.get('end') or '').strip()
+    fetch_all = (request.args.get('all') or '').strip().lower() in ('1','true','yes')
     try:
         days = int(request.args.get('days', '7'))
     except Exception:
@@ -576,7 +577,9 @@ def skyops_last7():
         '  )'
         ') '
     )
-    if start and end:
+    if fetch_all:
+        jql = base
+    elif start and end:
         # Use DATE-ONLY bounds as requested: yyyy/MM/dd
         def _date_only(s: str) -> str:
             s = (s or '').strip()
@@ -612,8 +615,8 @@ def csopm_open():
     """Fetch CSOPM tickets that are open (not closed/done/complete) assigned to specific org members except 'salilt'."""
     jql = (
         'project = CSOPM '
-        'AND status not in (closed, done, complete) '
-        'AND "CSO Severity" in ("Sev 1", "Sev 2", "Sev 3", "Sev 4") '
+        'AND status in (closed, done, complete) '
+        'AND "CSO Severity" not in ("Sev 1", "Sev 2", "Sev 3", "Sev 4") '
         'AND (assignee in (membersOf(ORG-SALILT-ALL), membersOf(ORG-SALILT-ALL-TEMP))) '
         'AND assignee != salilt'
     )

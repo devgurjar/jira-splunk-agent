@@ -168,6 +168,7 @@ export default function Dashboard() {
   const [skyopsUseLast7, setSkyopsUseLast7] = useState(true);
   const [skyopsStart, setSkyopsStart] = useState(null);
   const [skyopsEnd, setSkyopsEnd] = useState(null);
+  const [skyopsAll, setSkyopsAll] = useState(false);
   const [csopmLoading, setCsopmLoading] = useState(true);
   const [csopmError, setCsopmError] = useState('');
   const [csopmIssues, setCsopmIssues] = useState([]);
@@ -549,19 +550,23 @@ export default function Dashboard() {
                     value={skyopsStart}
                     onChange={(d) => setSkyopsStart(d)}
                     renderInput={(params) => <TextField {...params} size="small" sx={{ minWidth: 170 }} />}
-                    disabled={skyopsUseLast7}
+                    disabled={skyopsUseLast7 || skyopsAll}
                   />
                   <DatePicker
                     label="End"
                     value={skyopsEnd}
                     onChange={(d) => setSkyopsEnd(d)}
                     renderInput={(params) => <TextField {...params} size="small" sx={{ minWidth: 170 }} />}
-                    disabled={skyopsUseLast7}
+                    disabled={skyopsUseLast7 || skyopsAll}
                   />
                 </LocalizationProvider>
                 <FormControlLabel
-                  control={<Checkbox checked={skyopsUseLast7} onChange={(e) => setSkyopsUseLast7(e.target.checked)} />}
+                  control={<Checkbox checked={skyopsUseLast7} onChange={(e) => { const v = e.target.checked; setSkyopsUseLast7(v); if (v) setSkyopsAll(false); }} />}
                   label="Last 7 days"
+                />
+                <FormControlLabel
+                  control={<Checkbox checked={skyopsAll} onChange={(e) => { const v = e.target.checked; setSkyopsAll(v); if (v) setSkyopsUseLast7(false); }} />}
+                  label="All tickets"
                 />
                 <Button
                   variant="contained"
@@ -575,7 +580,10 @@ export default function Dashboard() {
                     setSkyopsIssues([]);
                     try {
                       let url = `${API_BASE}/skyops-last7`;
-                      if (!skyopsUseLast7 && (skyopsStart || skyopsEnd)) {
+                      const params = new URLSearchParams();
+                      if (skyopsAll) {
+                        params.set('all', 'true');
+                      } else if (!skyopsUseLast7 && (skyopsStart || skyopsEnd)) {
                         const fmt = (d) => {
                           if (!d) return '';
                           const dd = new Date(d);
@@ -584,11 +592,10 @@ export default function Dashboard() {
                           const ddn = String(dd.getDate()).padStart(2, '0');
                           return `${yyyy}-${mm}-${ddn}`;
                         };
-                        const params = new URLSearchParams();
                         if (skyopsStart) params.set('start', fmt(skyopsStart));
                         if (skyopsEnd) params.set('end', fmt(skyopsEnd));
-                        url = `${url}?${params.toString()}`;
                       }
+                      if ([...params.keys()].length > 0) url = `${url}?${params.toString()}`;
                       const res = await fetch(url);
                       if (!res.ok) {
                         const err = await res.json().catch(() => ({}));
