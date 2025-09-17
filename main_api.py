@@ -554,12 +554,14 @@ def skyops_last7():
     Query params:
       - days: integer, defaults to 7
     """
+    start = (request.args.get('start') or '').strip()  # YYYY-MM-DD or full datetime
+    end = (request.args.get('end') or '').strip()
     try:
         days = int(request.args.get('days', '7'))
     except Exception:
         days = 7
-    # Combined JQL: SKYOPS and FORMS (Adaptive Forms components) created in last N days
-    jql = (
+    # Combined JQL: SKYOPS and FORMS (Adaptive Forms components)
+    base = (
         '('
         '  ('
         '    project = SKYOPS '
@@ -573,9 +575,25 @@ def skyops_last7():
         '    AND labels = "af-submission-errors"'
         '  )'
         ') '
-        f'AND created >= -{days}d'
     )
-    result = jira_query_tool(jql) or {}
+    if start and end:
+        # Use DATE-ONLY bounds as requested: yyyy/MM/dd
+        def _date_only(s: str) -> str:
+            s = (s or '').strip()
+            if not s:
+                return ''
+            s = s[:10]  # YYYY-MM-DD
+            return s.replace('-', '/')
+        start_q = _date_only(start)
+        end_q = _date_only(end)
+        jql = base + f'AND created >= "{start_q}" AND created <= "{end_q}"'
+    else:
+        jql = base + f'AND created >= -{days}d'
+    # Limit fields for performance
+    result = jira_query_tool(jql, extra_params={
+        'fields': 'summary,status,created,assignee',
+        'maxResults': 200
+    }) or {}
     issues_out = []
     for it in (result.get('issues') or []):
         key = it.get('key')

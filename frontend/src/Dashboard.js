@@ -44,6 +44,11 @@ import Tooltip from '@mui/material/Tooltip';
 import Avatar from '@mui/material/Avatar';
 import Skeleton from '@mui/material/Skeleton';
 import TablePagination from '@mui/material/TablePagination';
+import TextField from '@mui/material/TextField';
+import Checkbox from '@mui/material/Checkbox';
+import FormControlLabel from '@mui/material/FormControlLabel';
+import { LocalizationProvider, DatePicker } from '@mui/x-date-pickers';
+import { AdapterDateFns } from '@mui/x-date-pickers/AdapterDateFns';
 
 function decodeBase64Path(path) {
   try {
@@ -160,6 +165,9 @@ export default function Dashboard() {
   const [skyopsIssues, setSkyopsIssues] = useState([]);
   const [skyopsPage, setSkyopsPage] = useState(0);
   const [skyopsRowsPerPage, setSkyopsRowsPerPage] = useState(10);
+  const [skyopsUseLast7, setSkyopsUseLast7] = useState(true);
+  const [skyopsStart, setSkyopsStart] = useState(null);
+  const [skyopsEnd, setSkyopsEnd] = useState(null);
 
   useEffect(() => {
     let isMounted = true;
@@ -478,7 +486,7 @@ export default function Dashboard() {
               </Grid>
             </Grid>
             {/* Removed duplicate dropdown below metrics row */}
-            <Box sx={{ mb: 1, display: 'flex', justifyContent: 'flex-end' }}>
+            <Box sx={{ mb: 1, display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 1 }}>
               <Stack direction="row" spacing={1}>
                 <Button
                   component="a"
@@ -506,6 +514,28 @@ export default function Dashboard() {
                 >
                   Go to this wiki for rotary and insights
                 </Button>
+              </Stack>
+              <Stack direction="row" spacing={1} alignItems="center">
+                <LocalizationProvider dateAdapter={AdapterDateFns}>
+                  <DatePicker
+                    label="Start"
+                    value={skyopsStart}
+                    onChange={(d) => setSkyopsStart(d)}
+                    renderInput={(params) => <TextField {...params} size="small" sx={{ minWidth: 170 }} />}
+                    disabled={skyopsUseLast7}
+                  />
+                  <DatePicker
+                    label="End"
+                    value={skyopsEnd}
+                    onChange={(d) => setSkyopsEnd(d)}
+                    renderInput={(params) => <TextField {...params} size="small" sx={{ minWidth: 170 }} />}
+                    disabled={skyopsUseLast7}
+                  />
+                </LocalizationProvider>
+                <FormControlLabel
+                  control={<Checkbox checked={skyopsUseLast7} onChange={(e) => setSkyopsUseLast7(e.target.checked)} />}
+                  label="Last 7 days"
+                />
                 <Button
                   variant="contained"
                   color="primary"
@@ -517,7 +547,22 @@ export default function Dashboard() {
                     setSkyopsLoading(true);
                     setSkyopsIssues([]);
                     try {
-                      const res = await fetch(`${API_BASE}/skyops-last7`);
+                      let url = `${API_BASE}/skyops-last7`;
+                      if (!skyopsUseLast7 && (skyopsStart || skyopsEnd)) {
+                        const fmt = (d) => {
+                          if (!d) return '';
+                          const dd = new Date(d);
+                          const yyyy = dd.getFullYear();
+                          const mm = String(dd.getMonth() + 1).padStart(2, '0');
+                          const ddn = String(dd.getDate()).padStart(2, '0');
+                          return `${yyyy}-${mm}-${ddn}`;
+                        };
+                        const params = new URLSearchParams();
+                        if (skyopsStart) params.set('start', fmt(skyopsStart));
+                        if (skyopsEnd) params.set('end', fmt(skyopsEnd));
+                        url = `${url}?${params.toString()}`;
+                      }
+                      const res = await fetch(url);
                       if (!res.ok) {
                         const err = await res.json().catch(() => ({}));
                         throw new Error(err.error || `Failed to fetch SKYOPS (${res.status})`);
@@ -531,7 +576,7 @@ export default function Dashboard() {
                     }
                   }}
                 >
-                  {skyopsLoading ? 'Loading tickets…' : 'Fetch SKYOPS & FORMS (last 7d)'}
+                  {skyopsLoading ? 'Loading tickets…' : 'Fetch SKYOPS & FORMS'}
                 </Button>
               </Stack>
             </Box>
@@ -539,7 +584,7 @@ export default function Dashboard() {
             {skyopsIssues.length > 0 && (
               <Card elevation={0} sx={{ mb: 2 }}>
                 <CardContent>
-                  <Typography variant="h5" sx={{ mb: 1 }}>SKYOPS & FORMS (last 7 days)</Typography>
+                  <Typography variant="h5" sx={{ mb: 1 }}>SKYOPS & FORMS Tickets</Typography>
                   <TableContainer component={Paper} elevation={0} sx={{ border: '1px solid', borderColor: (t) => t.palette.divider }}>
                     <Table size="medium">
                       <TableHead>

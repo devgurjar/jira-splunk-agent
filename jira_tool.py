@@ -9,7 +9,7 @@ JIRA_USER = os.getenv("JIRA_USER")
 JIRA_API_TOKEN = os.getenv("JIRA_API_TOKEN")
 JIRA_BEARER_TOKEN = os.getenv("JIRA_BEARER_TOKEN")
 
-def jira_query_tool(query: str) -> dict:
+def jira_query_tool(query: str, extra_params: dict | None = None) -> dict:
     jira_url = os.getenv("JIRA_URL")
     jira_user = os.getenv("JIRA_USER")
     jira_token = os.getenv("JIRA_API_TOKEN")
@@ -17,6 +17,8 @@ def jira_query_tool(query: str) -> dict:
         return {"error": "Jira URL not set in environment variables."}
     url = f"{jira_url}/rest/api/2/search"
     params = {"jql": query}
+    if isinstance(extra_params, dict):
+        params.update(extra_params)
     headers = {"Accept": "application/json"}
     auth = None
     # Prefer Bearer token if present
