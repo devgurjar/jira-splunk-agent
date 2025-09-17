@@ -168,6 +168,11 @@ export default function Dashboard() {
   const [skyopsUseLast7, setSkyopsUseLast7] = useState(true);
   const [skyopsStart, setSkyopsStart] = useState(null);
   const [skyopsEnd, setSkyopsEnd] = useState(null);
+  const [csopmLoading, setCsopmLoading] = useState(true);
+  const [csopmError, setCsopmError] = useState('');
+  const [csopmIssues, setCsopmIssues] = useState([]);
+  const [csopmPage, setCsopmPage] = useState(0);
+  const [csopmRpp, setCsopmRpp] = useState(10);
 
   useEffect(() => {
     let isMounted = true;
@@ -221,6 +226,28 @@ export default function Dashboard() {
     fetchDates();
     return () => { isMounted = false; };
   }, [API_BASE, reportDate]);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      setCsopmLoading(true);
+      setCsopmError('');
+      try {
+        const res = await fetch(`${API_BASE}/csopm-open`);
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.error || `Failed to fetch CSOPM (${res.status})`);
+        }
+        const j = await res.json();
+        if (alive) setCsopmIssues(Array.isArray(j?.issues) ? j.issues : []);
+      } catch (e) {
+        if (alive) setCsopmError(e.message || 'Failed to fetch CSOPM');
+      } finally {
+        if (alive) setCsopmLoading(false);
+      }
+    })();
+    return () => { alive = false; };
+  }, [API_BASE]);
 
   const summaryRows = useMemo(() => Array.isArray(data?.svc_rows) ? data.svc_rows : [], [data]);
   const reportItemsRaw = useMemo(() => Array.isArray(data?.report_items) ? data.report_items : [], [data]);
@@ -625,6 +652,53 @@ export default function Dashboard() {
                 </CardContent>
               </Card>
             )}
+            <Card elevation={0} sx={{ mb: 2 }}>
+              <CardContent>
+                <Typography variant="h5" sx={{ mb: 1 }}>CSOPM Open Tickets</Typography>
+                {!!csopmError && <Alert severity="error" sx={{ mb: 1 }}>{csopmError}</Alert>}
+                <TableContainer component={Paper} elevation={0} sx={{ border: '1px solid', borderColor: (t) => t.palette.divider }}>
+                  <Table size="medium">
+                    <TableHead>
+                      <TableRow>
+                        <TableCell sx={{ fontWeight: 800 }}>Jira</TableCell>
+                        <TableCell sx={{ fontWeight: 800 }}>Summary</TableCell>
+                        <TableCell sx={{ fontWeight: 800 }}>Status</TableCell>
+                        <TableCell sx={{ fontWeight: 800 }}>Created</TableCell>
+                        <TableCell sx={{ fontWeight: 800 }}>Assignee</TableCell>
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {(csopmIssues.length === 0 && !csopmLoading) ? (
+                        <TableRow><TableCell colSpan={5} sx={{ color: 'text.secondary' }}>No open CSOPM tickets.</TableCell></TableRow>
+                      ) : (
+                        csopmIssues
+                          .slice(csopmPage * csopmRpp, csopmPage * csopmRpp + csopmRpp)
+                          .map((it) => (
+                          <TableRow key={it.key} hover>
+                            <TableCell>
+                              <Link href={`https://jira.corp.adobe.com/browse/${it.key}`} target="_blank" rel="noreferrer">{it.key}</Link>
+                            </TableCell>
+                            <TableCell>{it.summary || '-'}</TableCell>
+                            <TableCell>{it.status || '-'}</TableCell>
+                            <TableCell>{formatToIST(it.created) || '-'}</TableCell>
+                            <TableCell>{it.assignee || '-'}</TableCell>
+                          </TableRow>
+                        ))
+                      )}
+                    </TableBody>
+                  </Table>
+                </TableContainer>
+                <TablePagination
+                  component="div"
+                  count={csopmIssues.length}
+                  page={csopmPage}
+                  onPageChange={(_, p) => setCsopmPage(p)}
+                  rowsPerPage={csopmRpp}
+                  onRowsPerPageChange={(e) => { setCsopmRpp(parseInt(e.target.value, 10)); setCsopmPage(0); }}
+                  rowsPerPageOptions={[5,10,25,50]}
+                />
+              </CardContent>
+            </Card>
             <Typography variant="h5" sx={{ mb: 1 }}>Summary</Typography>
             <TableContainer component={Paper} elevation={0} sx={{ border: '1px solid', borderColor: (t) => t.palette.divider }}>
               <Table size="medium">

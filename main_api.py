@@ -607,6 +607,33 @@ def skyops_last7():
         })
     return jsonify({'count': len(issues_out), 'issues': issues_out, 'jql': jql})
 
+@app.route('/csopm-open', methods=['GET'])
+def csopm_open():
+    """Fetch CSOPM tickets that are open (not closed/done/complete) assigned to specific org members except 'salilt'."""
+    jql = (
+        'project = CSOPM '
+        'AND status not in (closed, done, complete) '
+        'AND "CSO Severity" in ("Sev 1", "Sev 2", "Sev 3", "Sev 4") '
+        'AND (assignee in (membersOf(ORG-SALILT-ALL), membersOf(ORG-SALILT-ALL-TEMP))) '
+        'AND assignee != salilt'
+    )
+    result = jira_query_tool(jql, extra_params={
+        'fields': 'summary,status,created,assignee',
+        'maxResults': 200
+    }) or {}
+    issues_out = []
+    for it in (result.get('issues') or []):
+        key = it.get('key')
+        fields = it.get('fields') or {}
+        issues_out.append({
+            'key': key,
+            'summary': fields.get('summary', ''),
+            'status': (fields.get('status') or {}).get('name', ''),
+            'created': fields.get('created', ''),
+            'assignee': (fields.get('assignee') or {}).get('displayName', ''),
+        })
+    return jsonify({'count': len(issues_out), 'issues': issues_out, 'jql': jql})
+
 class JiraAgent:
     def __init__(self, llm=None, tools=[]):
         self.agent = Agent(
