@@ -123,7 +123,7 @@ def build_report_data(earliest: str, latest: str, services: list[str] | None = N
         sub = (
             '[ search index=dx_aem_engineering sourcetype=aemaccess '
             f'aem_service={aem_service} aem_envType=prod aem_tier=publish '
-            '"*guideContainer.af.submit.jsp" code>=500 '
+            '(path="/adobe/forms/af/submit*" OR path="*guideContainer.af.submit.jsp") code>=500 '
             f'earliest="{earliest}" latest="{latest}" '
             '| sort 0 - _time '
             '| streamstats count as failCount by path '
