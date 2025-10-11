@@ -44,6 +44,7 @@ import Tooltip from '@mui/material/Tooltip';
 import Avatar from '@mui/material/Avatar';
 import Skeleton from '@mui/material/Skeleton';
 import TablePagination from '@mui/material/TablePagination';
+import TableSortLabel from '@mui/material/TableSortLabel';
 import TextField from '@mui/material/TextField';
 import Checkbox from '@mui/material/Checkbox';
 import FormControlLabel from '@mui/material/FormControlLabel';
@@ -174,6 +175,10 @@ export default function Dashboard() {
   const [csopmIssues, setCsopmIssues] = useState([]);
   const [csopmPage, setCsopmPage] = useState(0);
   const [csopmRpp, setCsopmRpp] = useState(10);
+  const [skyopsSortBy, setSkyopsSortBy] = useState(''); // 'key' | 'status' | 'created' | 'assignee'
+  const [skyopsSortOrder, setSkyopsSortOrder] = useState('asc'); // 'asc' | 'desc'
+  const [csopmSortBy, setCsopmSortBy] = useState(''); // 'key' | 'status' | 'created' | 'assignee'
+  const [csopmSortOrder, setCsopmSortOrder] = useState('asc');
 
   useEffect(() => {
     let isMounted = true;
@@ -595,6 +600,10 @@ export default function Dashboard() {
                         if (skyopsStart) params.set('start', fmt(skyopsStart));
                         if (skyopsEnd) params.set('end', fmt(skyopsEnd));
                       }
+                      if (skyopsSortBy) {
+                        params.set('sort', skyopsSortBy);
+                        params.set('order', skyopsSortOrder);
+                      }
                       if ([...params.keys()].length > 0) url = `${url}?${params.toString()}`;
                       const res = await fetch(url);
                       if (!res.ok) {
@@ -623,15 +632,75 @@ export default function Dashboard() {
                     <Table size="medium">
                       <TableHead>
                         <TableRow>
-                          <TableCell sx={{ fontWeight: 800 }}>Jira</TableCell>
+                          <TableCell sx={{ fontWeight: 800 }}>
+                            <TableSortLabel
+                              active={skyopsSortBy === 'key'}
+                              direction={skyopsSortBy === 'key' ? skyopsSortOrder : 'asc'}
+                              onClick={() => {
+                                setSkyopsSortBy('key');
+                                setSkyopsSortOrder((prev) => (skyopsSortBy === 'key' && prev === 'asc' ? 'desc' : 'asc'));
+                              }}
+                            >
+                              Jira
+                            </TableSortLabel>
+                          </TableCell>
                           <TableCell sx={{ fontWeight: 800 }}>Summary</TableCell>
-                          <TableCell sx={{ fontWeight: 800 }}>Status</TableCell>
-                          <TableCell sx={{ fontWeight: 800 }}>Created</TableCell>
-                          <TableCell sx={{ fontWeight: 800 }}>Assignee</TableCell>
+                          <TableCell sx={{ fontWeight: 800 }}>
+                            <TableSortLabel
+                              active={skyopsSortBy === 'status'}
+                              direction={skyopsSortBy === 'status' ? skyopsSortOrder : 'asc'}
+                              onClick={() => {
+                                setSkyopsSortBy('status');
+                                setSkyopsSortOrder((prev) => (skyopsSortBy === 'status' && prev === 'asc' ? 'desc' : 'asc'));
+                              }}
+                            >
+                              Status
+                            </TableSortLabel>
+                          </TableCell>
+                          <TableCell sx={{ fontWeight: 800 }}>
+                            <TableSortLabel
+                              active={skyopsSortBy === 'created'}
+                              direction={skyopsSortBy === 'created' ? skyopsSortOrder : 'asc'}
+                              onClick={() => {
+                                setSkyopsSortBy('created');
+                                setSkyopsSortOrder((prev) => (skyopsSortBy === 'created' && prev === 'asc' ? 'desc' : 'asc'));
+                              }}
+                            >
+                              Created
+                            </TableSortLabel>
+                          </TableCell>
+                          <TableCell sx={{ fontWeight: 800 }}>
+                            <TableSortLabel
+                              active={skyopsSortBy === 'assignee'}
+                              direction={skyopsSortBy === 'assignee' ? skyopsSortOrder : 'asc'}
+                              onClick={() => {
+                                setSkyopsSortBy('assignee');
+                                setSkyopsSortOrder((prev) => (skyopsSortBy === 'assignee' && prev === 'asc' ? 'desc' : 'asc'));
+                              }}
+                            >
+                              Assignee
+                            </TableSortLabel>
+                          </TableCell>
                         </TableRow>
                       </TableHead>
                       <TableBody>
-                        {skyopsIssues
+                        {(() => {
+                          const sorted = [...skyopsIssues];
+                          if (skyopsSortBy === 'key') {
+                            sorted.sort((a, b) => (a.key || '').localeCompare(b.key || '', undefined, { sensitivity: 'base' }));
+                          } else if (skyopsSortBy === 'status') {
+                            sorted.sort((a, b) => (a.status || '').localeCompare(b.status || '', undefined, { sensitivity: 'base' }));
+                          } else if (skyopsSortBy === 'created') {
+                            sorted.sort((a, b) => {
+                              const ad = parseJiraDateToDate(a.created) || new Date(0);
+                              const bd = parseJiraDateToDate(b.created) || new Date(0);
+                              return ad - bd;
+                            });
+                          } else if (skyopsSortBy === 'assignee') {
+                            sorted.sort((a, b) => (a.assignee || '').localeCompare(b.assignee || '', undefined, { sensitivity: 'base' }));
+                          }
+                          if (skyopsSortOrder === 'desc') sorted.reverse();
+                          return sorted
                           .slice(skyopsPage * skyopsRowsPerPage, skyopsPage * skyopsRowsPerPage + skyopsRowsPerPage)
                           .map((it) => (
                           <TableRow key={it.key} hover>
@@ -643,7 +712,7 @@ export default function Dashboard() {
                             <TableCell>{formatToIST(it.created) || '-'}</TableCell>
                             <TableCell>{it.assignee || '-'}</TableCell>
                           </TableRow>
-                        ))}
+                        )); })()}
                       </TableBody>
                     </Table>
                   </TableContainer>
@@ -667,18 +736,79 @@ export default function Dashboard() {
                   <Table size="medium">
                     <TableHead>
                       <TableRow>
-                        <TableCell sx={{ fontWeight: 800 }}>Jira</TableCell>
+                        <TableCell sx={{ fontWeight: 800 }}>
+                          <TableSortLabel
+                            active={csopmSortBy === 'key'}
+                            direction={csopmSortBy === 'key' ? csopmSortOrder : 'asc'}
+                            onClick={() => {
+                              setCsopmSortBy('key');
+                              setCsopmSortOrder((prev) => (csopmSortBy === 'key' && prev === 'asc' ? 'desc' : 'asc'));
+                            }}
+                          >
+                            Jira
+                          </TableSortLabel>
+                        </TableCell>
                         <TableCell sx={{ fontWeight: 800 }}>Summary</TableCell>
-                        <TableCell sx={{ fontWeight: 800 }}>Status</TableCell>
-                        <TableCell sx={{ fontWeight: 800 }}>Created</TableCell>
-                        <TableCell sx={{ fontWeight: 800 }}>Assignee</TableCell>
+                        <TableCell sx={{ fontWeight: 800 }}>
+                          <TableSortLabel
+                            active={csopmSortBy === 'status'}
+                            direction={csopmSortBy === 'status' ? csopmSortOrder : 'asc'}
+                            onClick={() => {
+                              setCsopmSortBy('status');
+                              setCsopmSortOrder((prev) => (csopmSortBy === 'status' && prev === 'asc' ? 'desc' : 'asc'));
+                            }}
+                          >
+                            Status
+                          </TableSortLabel>
+                        </TableCell>
+                        <TableCell sx={{ fontWeight: 800 }}>
+                          <TableSortLabel
+                            active={csopmSortBy === 'created'}
+                            direction={csopmSortBy === 'created' ? csopmSortOrder : 'asc'}
+                            onClick={() => {
+                              setCsopmSortBy('created');
+                              setCsopmSortOrder((prev) => (csopmSortBy === 'created' && prev === 'asc' ? 'desc' : 'asc'));
+                            }}
+                          >
+                            Created
+                          </TableSortLabel>
+                        </TableCell>
+                        <TableCell sx={{ fontWeight: 800 }}>
+                          <TableSortLabel
+                            active={csopmSortBy === 'assignee'}
+                            direction={csopmSortBy === 'assignee' ? csopmSortOrder : 'asc'}
+                            onClick={() => {
+                              setCsopmSortBy('assignee');
+                              setCsopmSortOrder((prev) => (csopmSortBy === 'assignee' && prev === 'asc' ? 'desc' : 'asc'));
+                            }}
+                          >
+                            Assignee
+                          </TableSortLabel>
+                        </TableCell>
                       </TableRow>
                     </TableHead>
                     <TableBody>
                       {(csopmIssues.length === 0 && !csopmLoading) ? (
                         <TableRow><TableCell colSpan={5} sx={{ color: 'text.secondary' }}>No open CSOPM tickets.</TableCell></TableRow>
                       ) : (
-                        csopmIssues
+                        (() => {
+                          const sorted = [...csopmIssues];
+                          if (csopmSortBy === 'key') {
+                            sorted.sort((a, b) => (a.key || '').localeCompare(b.key || '', undefined, { sensitivity: 'base' }));
+                          } else if (csopmSortBy === 'status') {
+                            sorted.sort((a, b) => (a.status || '').localeCompare(b.status || '', undefined, { sensitivity: 'base' }));
+                          } else if (csopmSortBy === 'created') {
+                            sorted.sort((a, b) => {
+                              const ad = parseJiraDateToDate(a.created) || new Date(0);
+                              const bd = parseJiraDateToDate(b.created) || new Date(0);
+                              return ad - bd;
+                            });
+                          } else if (csopmSortBy === 'assignee') {
+                            sorted.sort((a, b) => (a.assignee || '').localeCompare(b.assignee || '', undefined, { sensitivity: 'base' }));
+                          }
+                          if (csopmSortOrder === 'desc') sorted.reverse();
+                          return sorted;
+                        })()
                           .slice(csopmPage * csopmRpp, csopmPage * csopmRpp + csopmRpp)
                           .map((it) => (
                           <TableRow key={it.key} hover>

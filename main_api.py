@@ -576,6 +576,7 @@ def skyops_last7():
         '    AND labels = "af-submission-errors"'
         '  )'
         ') '
+        'AND status NOT IN (Done, Closed, Resolved) '
     )
     if fetch_all:
         jql = base
@@ -608,6 +609,17 @@ def skyops_last7():
             'created': fields.get('created', ''),
             'assignee': (fields.get('assignee') or {}).get('displayName', ''),
         })
+    # Optional sorting support: sort by status | created | assignee
+    sort_by = (request.args.get('sort') or '').strip().lower()
+    sort_order = (request.args.get('order') or 'asc').strip().lower()
+    reverse = (sort_order == 'desc')
+    if sort_by in ('status', 'created', 'assignee'):
+        if sort_by == 'status':
+            issues_out.sort(key=lambda x: (x.get('status') or '').lower(), reverse=reverse)
+        elif sort_by == 'created':
+            issues_out.sort(key=lambda x: (x.get('created') or ''), reverse=reverse)
+        elif sort_by == 'assignee':
+            issues_out.sort(key=lambda x: (x.get('assignee') or '').lower(), reverse=reverse)
     return jsonify({'count': len(issues_out), 'issues': issues_out, 'jql': jql})
 
 @app.route('/csopm-open', methods=['GET'])
