@@ -346,6 +346,7 @@ export default function Dashboard() {
       </AppBar>
 
       <Container sx={{ py: 3 }}>
+        {/* Top-level banner exists globally; in-page view switch removed to avoid duplication */}
         {/* Top filters and counters removed per request */}
         {loading && (
           <Box>

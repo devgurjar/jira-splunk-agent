@@ -5,7 +5,7 @@ import json
 from crewai import LLM, Agent, Task, Crew
 from jira_tool import jira_query_tool, create_jira_issue, add_jira_comment, link_jira_issues, get_linked_forms_jira, get_jira_comments, get_jira_status, search_skysi_by_aem_service
 from aem_extractor_tool import extract_aem_fields_from_description
-from splunk_tool import splunk_search_tool, splunk_search_rows, get_last_error_paths, list_services_with_errors, get_top_error_times, get_latest_failures_by_path, build_multi_window_error_query, list_services_total_submissions
+from splunk_tool import splunk_search_tool, splunk_search_rows, get_last_error_paths, list_services_with_errors, get_top_error_times, get_latest_failures_by_path, build_multi_window_error_query, list_services_total_submissions, get_daily_submission_stats, get_daily_counts_for_date
 from datetime import datetime, timedelta
 from flask_cors import CORS
 from io import BytesIO
@@ -648,6 +648,97 @@ def csopm_open():
             'assignee': (fields.get('assignee') or {}).get('displayName', ''),
         })
     return jsonify({'count': len(issues_out), 'issues': issues_out, 'jql': jql})
+
+@app.route('/daily-stats-refresh', methods=['POST'])
+def daily_stats_refresh():
+    """Compute daily submission stats for the past N days and save to JSON in daily-data/daily_stats.json.
+    Optional JSON body: {"days": 120}
+    """
+    try:
+        data = request.json or {}
+        days = int(data.get('days', 120))
+    except Exception:
+        days = 120
+    stats = get_daily_submission_stats(days=days)
+    try:
+        # Save into submission-count/daily_counts.json
+        base_dir = os.path.join(os.path.dirname(__file__), 'submission-count')
+        os.makedirs(base_dir, exist_ok=True)
+        path = os.path.join(base_dir, 'daily_counts.json')
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump({"days": days, "stats": stats}, f, ensure_ascii=False, indent=2)
+        return jsonify({"status": "ok", "path": path, "count": len(stats)})
+    except Exception as e:
+        print(f"Failed to write daily_stats.json: {e}")
+        return jsonify({"error": "Failed to write daily stats"}), 500
+
+@app.route('/daily-stats', methods=['GET'])
+def daily_stats():
+    """Return daily stats JSON if present, else compute ad-hoc for last 60 days."""
+    # Prefer new submission-count/daily_counts.json
+    new_path = os.path.join(os.path.dirname(__file__), 'submission-count', 'daily_counts.json')
+    legacy_path = None
+    try:
+        dir_path, _default = _resolve_cache_dir_and_file()
+        legacy_path = os.path.join(dir_path, 'daily_stats.json')
+    except Exception:
+        legacy_path = os.path.join(os.path.dirname(__file__), 'daily-data', 'daily_stats.json')
+    if os.path.exists(new_path):
+        try:
+            with open(new_path, 'r', encoding='utf-8') as f:
+                return jsonify(json.load(f))
+        except Exception:
+            pass
+    if legacy_path and os.path.exists(legacy_path):
+        try:
+            with open(legacy_path, 'r', encoding='utf-8') as f:
+                return jsonify(json.load(f))
+        except Exception:
+            pass
+    # Fallback: aggregate individual per-day files submission-count/daily_counts_YYYY-MM-DD.json
+    try:
+        folder = os.path.join(os.path.dirname(__file__), 'submission-count')
+        files = []
+        if os.path.isdir(folder):
+            for fn in os.listdir(folder):
+                if fn.startswith('daily_counts_') and fn.endswith('.json'):
+                    files.append(os.path.join(folder, fn))
+        stats = []
+        for fp in files:
+            try:
+                with open(fp, 'r', encoding='utf-8') as f:
+                    j = json.load(f)
+                day = (j.get('day') or '')[:10]
+                total = int(j.get('total', 0))
+                passed = int(j.get('passed', 0))
+                failed = int(j.get('failed', 0))
+                if day:
+                    stats.append({'day': day, 'total': total, 'passed': passed, 'failed': failed})
+            except Exception:
+                continue
+        stats.sort(key=lambda x: x['day'])
+        if stats:
+            return jsonify({"days": len(stats), "stats": stats})
+    except Exception as e:
+        print(f"Failed to aggregate per-day counts: {e}")
+    # fallback compute
+    stats = get_daily_submission_stats(days=60)
+    return jsonify({"days": 60, "stats": stats})
+
+@app.route('/daily-stats/day', methods=['GET'])
+def daily_stats_day():
+    """Return counts for a specific day using strict 1-day earliest/latest bounds.
+    Query: ?date=YYYY-MM-DD
+    """
+    date_arg = (request.args.get('date') or '').strip()
+    if not date_arg:
+        return jsonify({"error": "missing date"}), 400
+    try:
+        out = get_daily_counts_for_date(date_arg)
+        return jsonify(out)
+    except Exception as e:
+        print(f"Failed to compute daily counts for {date_arg}: {e}")
+        return jsonify({"error": "failed to compute"}), 500
 
 class JiraAgent:
     def __init__(self, llm=None, tools=[]):

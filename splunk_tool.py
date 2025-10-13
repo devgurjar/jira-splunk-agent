@@ -349,4 +349,95 @@ def build_multi_window_error_query(aem_service: str, env_type: str, aem_tier: st
     case_expr = ', '.join(cases) + ', 1=1,"Other"'
     query = base + ' ' + ' '.join(evals) + f' | eval Window=case({case_expr}) | search Window!="Other" | table Window, _time, msg | sort Window, _time'
     return query
+
+def get_daily_submission_stats(days: int = 60):
+    """Return list of daily totals with fields: day, total, failed, passed.
+    Uses aemaccess logs filtered to prod/publish and form submit paths.
+    """
+    if days <= 0:
+        days = 60
+    base_terms = [
+        'index=dx_aem_engineering',
+        'sourcetype=aemaccess',
+        'aem_tier="publish"',
+        '(path="/adobe/forms/af/submit*" OR path="*guideContainer.af.submit.jsp")',
+        'aem_envType=prod',
+        'aem_program_id IN (*)',
+        'namespace="*"',
+        f'earliest="-{days}d" latest="now"'
+    ]
+    base = ' '.join(base_terms)
+    query = (
+        f'{base} '
+        '| eval day=strftime(_time, "%Y-%m-%d") '
+        '| stats count as total, sum(if(code>=500,1,0)) as failed by day '
+        '| eval passed=total - failed '
+        '| sort day'
+    )
+    rows = splunk_search_rows(query) or []
+    out = []
+    for r in rows:
+        day = r.get('day') or ''
+        try:
+            total = int(r.get('total', '0'))
+        except Exception:
+            total = 0
+        try:
+            failed = int(r.get('failed', '0'))
+        except Exception:
+            failed = 0
+        passed = max(total - failed, 0)
+        if day:
+            out.append({'day': day, 'total': total, 'failed': failed, 'passed': passed})
+    return out
+
+def _format_splunk_date_bounds(date_str: str) -> tuple[str, str]:
+    """Return (earliest, latest) strings for a 1-day window starting at date 00:00 to next day 00:00.
+    Splunk accepts MM/DD/YYYY:HH:MM:SS.
+    """
+    from datetime import datetime, timedelta
+    d = datetime.strptime(date_str[:10], "%Y-%m-%d")
+    start = d
+    end = d + timedelta(days=1)
+    def fmt(dt):
+        return dt.strftime("%m/%d/%Y:%H:%M:%S")
+    return (fmt(start), fmt(end))
+
+def _splunk_count(query: str) -> int:
+    rows = splunk_search_rows(query) or []
+    if rows and isinstance(rows, list):
+        r0 = rows[0]
+        for k in ("c", "count", "total"):
+            if k in r0:
+                try:
+                    return int(r0[k])
+                except Exception:
+                    pass
+    return 0
+
+def get_daily_counts_for_window(earliest: str, latest: str) -> dict:
+    """Run three Splunk queries for a single-day window: total, success (code<500), failure (code>=500)."""
+    base = (
+        'index="dx_aem_engineering" '
+        'sourcetype=aemaccess '
+        'aem_envType=prod '
+        'aem_tier=publish '
+        '(path="/adobe/forms/af/submit*" OR "guideContainer.af.submit.jsp") '
+        f'earliest="{earliest}" latest="{latest}"'
+    )
+    total_q = f'{base} | stats count as c'
+    success_q = f'{base} | where code < 500 | stats count as c'
+    failure_q = f'{base} | where (code >= 500) | stats count as c'
+    total = _splunk_count(total_q)
+    success = _splunk_count(success_q)
+    failure = _splunk_count(failure_q)
+    # Guard: success + failure may not equal total due to missing codes; prefer derived passed but keep totals
+    if success == 0 and failure <= total:
+        success = max(total - failure, 0)
+    return {"total": total, "passed": success, "failed": failure}
+
+def get_daily_counts_for_date(date_str: str) -> dict:
+    earliest, latest = _format_splunk_date_bounds(date_str)
+    counts = get_daily_counts_for_window(earliest, latest)
+    return {"day": date_str[:10], **counts}
  
