@@ -656,7 +656,7 @@ def daily_stats_refresh():
     """
     try:
         data = request.json or {}
-        days = int(data.get('days', 120))
+        days = int(data.get('days', 1))
     except Exception:
         days = 120
     stats = get_daily_submission_stats(days=days)
@@ -667,6 +667,24 @@ def daily_stats_refresh():
         path = os.path.join(base_dir, 'daily_counts.json')
         with open(path, 'w', encoding='utf-8') as f:
             json.dump({"days": days, "stats": stats}, f, ensure_ascii=False, indent=2)
+        # Also write individual per-day files for compatibility
+        for item in stats:
+            try:
+                day = (item.get('day') or '')[:10]
+                if not day:
+                    continue
+                single_payload = {
+                    "day": day,
+                    "total": int(item.get('total', 0)),
+                    "passed": int(item.get('passed', 0)),
+                    "failed": int(item.get('failed', 0)),
+                }
+                # Write only the supported naming style used by the graph aggregator
+                fp_counts = os.path.join(base_dir, f'daily_counts_{day}.json')
+                with open(fp_counts, 'w', encoding='utf-8') as fpc:
+                    json.dump(single_payload, fpc, ensure_ascii=False, indent=2)
+            except Exception as _e:
+                print(f"Failed to write per-day file: {_e}")
         return jsonify({"status": "ok", "path": path, "count": len(stats)})
     except Exception as e:
         print(f"Failed to write daily_stats.json: {e}")
