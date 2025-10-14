@@ -659,15 +659,21 @@ def daily_stats_refresh():
         days = int(data.get('days', 1))
     except Exception:
         days = 120
-    stats = get_daily_submission_stats(days=days)
+    # Build date-wise stats using strict 1-day windows to ensure
+    # Total, Passed (code<500) and Failed (code>=500) are accurate per day
+    from datetime import datetime as _dt, timedelta as _td
+    today = _dt.utcnow().date()
+    date_list = [ (today - _td(days=i)).strftime('%Y-%m-%d') for i in range(max(1, days)-1, -1, -1) ]
+    stats = []
+    for d in date_list:
+        try:
+            stats.append(get_daily_counts_for_date(d))
+        except Exception as _e:
+            print(f"Failed to compute counts for {d}: {_e}")
     try:
-        # Save into submission-count/daily_counts.json
+        # Write individual per-day files only
         base_dir = os.path.join(os.path.dirname(__file__), 'submission-count')
         os.makedirs(base_dir, exist_ok=True)
-        path = os.path.join(base_dir, 'daily_counts.json')
-        with open(path, 'w', encoding='utf-8') as f:
-            json.dump({"days": days, "stats": stats}, f, ensure_ascii=False, indent=2)
-        # Also write individual per-day files for compatibility
         for item in stats:
             try:
                 day = (item.get('day') or '')[:10]
@@ -685,7 +691,7 @@ def daily_stats_refresh():
                     json.dump(single_payload, fpc, ensure_ascii=False, indent=2)
             except Exception as _e:
                 print(f"Failed to write per-day file: {_e}")
-        return jsonify({"status": "ok", "path": path, "count": len(stats)})
+        return jsonify({"status": "ok", "directory": base_dir, "count": len(stats)})
     except Exception as e:
         print(f"Failed to write daily_stats.json: {e}")
         return jsonify({"error": "Failed to write daily stats"}), 500
