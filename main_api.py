@@ -662,8 +662,10 @@ def daily_stats_refresh():
     # Build date-wise stats using strict 1-day windows to ensure
     # Total, Passed (code<500) and Failed (code>=500) are accurate per day
     from datetime import datetime as _dt, timedelta as _td
-    today = _dt.utcnow().date()
-    date_list = [ (today - _td(days=i)).strftime('%Y-%m-%d') for i in range(max(1, days)-1, -1, -1) ]
+    # Always target up to "yesterday" (UTC) to avoid current-day partials/zeros
+    base = _dt.utcnow().date() - _td(days=1)
+    # Generate oldest→newest, ending at "yesterday"
+    date_list = [ (base - _td(days=i)).strftime('%Y-%m-%d') for i in range(max(1, days)-1, -1, -1) ]
     stats = []
     for d in date_list:
         try:
