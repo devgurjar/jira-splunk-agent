@@ -370,7 +370,7 @@ def get_daily_submission_stats(days: int = 60):
     query = (
         f'{base} '
         '| eval day=strftime(_time, "%Y-%m-%d") '
-        '| stats count as total, sum(if(code>=500,1,0)) as failed by day '
+        '| stats count as total, sum(if(code>=500 AND code!=502,1,0)) as failed by day '
         '| eval passed=total - failed '
         '| sort day'
     )
@@ -416,7 +416,7 @@ def _splunk_count(query: str) -> int:
     return 0
 
 def get_daily_counts_for_window(earliest: str, latest: str) -> dict:
-    """Run three Splunk queries for a single-day window: total, success (code<500), failure (code>=500)."""
+    """Run three Splunk queries for a single-day window: total, success (code<500), failure (code>=500 and code!=502)."""
     base = (
         'index="dx_aem_engineering" '
         'sourcetype=aemaccess '
@@ -427,7 +427,7 @@ def get_daily_counts_for_window(earliest: str, latest: str) -> dict:
     )
     total_q = f'{base} | stats count as c'
     success_q = f'{base} | where code < 500 | stats count as c'
-    failure_q = f'{base} | where (code >= 500) | stats count as c'
+    failure_q = f'{base} | where (code >= 500 AND code != 502) | stats count as c'
     total = _splunk_count(total_q)
     success = _splunk_count(success_q)
     failure = _splunk_count(failure_q)
