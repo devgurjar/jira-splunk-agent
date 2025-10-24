@@ -177,7 +177,7 @@ def get_last_error_paths(aem_service: str, env_type: str, aem_tier: str, earlies
     if aem_tier:
         terms.append(f'aem_tier={aem_tier}')
     terms.append('(path="/adobe/forms/af/submit*" OR path="*guideContainer.af.submit.jsp")')
-    terms.append('code>=500')
+    terms.append('code>=500 & code!=502')
     base = ' '.join(terms)
     if earliest and latest:
         base += f' earliest="{earliest}" latest="{latest}"'
@@ -206,7 +206,7 @@ def list_services_with_errors(earliest: str = None, latest: str = None):
         'aem_envType=prod',
         'aem_program_id IN (*)',
         'namespace="*"',
-        'code>=500'
+        'code>=500 & code!=502'
     ]
     base = ' '.join(terms)
     if earliest and latest:
@@ -297,7 +297,7 @@ def get_latest_failures_by_path(aem_service: str, env_type: str, aem_tier: str, 
     if aem_tier:
         terms.append(f'aem_tier={aem_tier}')
     terms.append('(path="/adobe/forms/af/submit*" OR path="*guideContainer.af.submit.jsp")')
-    terms.append('code>=500')
+    terms.append('code>=500 & code!=502')
     base = ' '.join(terms)
     if earliest and latest:
         base += f' earliest="{earliest}" latest="{latest}"'
